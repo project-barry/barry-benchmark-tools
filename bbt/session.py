@@ -13,6 +13,7 @@ Per run: cool down to the baseline -> snapshot -> run (launch, capture, kill)
 from __future__ import annotations
 
 import csv
+import re
 import datetime as dt
 import fcntl
 import shutil
@@ -55,25 +56,58 @@ def measure_baseline(seconds: float = 10) -> dict:
 
 
 def cooldown(cfg: dict, baseline: dict) -> dict:
+    """Wait for a comparable starting point, not for a cold device.
+
+    Ends at the first of: CPU and GPU back within tolerance of the idle
+    baseline; temperatures levelled off (both changed less than plateau_c
+    over the last plateau_s, after min_s); max_s. Handhelds that idle warm (e.g.
+    while charging) never get back to a cold-start baseline, so waiting for
+    it only burns time; run-to-run start temperatures are checked instead
+    (see flags_for)."""
     tol, lo, hi = cfg["tolerance_c"], cfg["min_s"], cfg["max_s"]
+    win, drop = cfg.get("plateau_s", 15), cfg.get("plateau_c", 1.0)
     target = {"cpu": (cfg.get("baseline_c") or baseline.get("cpu", 45)) + tol,
               "gpu": (cfg.get("baseline_gpu_c") or baseline.get("gpu", 45)) + tol}
     t0 = time.monotonic()
     start = temps()
-    log(f"cooldown: cpu {start.get('cpu')} C, gpu {start.get('gpu')} C -> "
-        f"<= {target['cpu']:.1f} / {target['gpu']:.1f} C")
+    hist: list[tuple[float, dict]] = []
+    log(f"cooldown: cpu {start.get('cpu')} C, gpu {start.get('gpu')} C "
+        f"(baseline+{tol}: {target['cpu']:.1f} / {target['gpu']:.1f} C, or level for {win} s, max {hi} s)")
+    reason = "max_s"
     while True:
         waited = time.monotonic() - t0
         cur = temps()
-        ok = all(cur.get(g, 0) <= target[g] for g in target)
-        if (ok and waited >= lo) or waited >= hi:
+        hist.append((waited, cur))
+        if all(cur.get(g, 0) <= target[g] for g in target) and waited >= lo:
+            reason = "baseline"
+            break
+        old = [h for h in hist if h[0] <= waited - win]
+        if waited >= max(lo, win) and old:
+            ref = old[-1][1]
+            if all(abs(ref.get(g, 0) - cur.get(g, 0)) < drop for g in ("cpu", "gpu")):  # flat, not rising
+                reason = "level"
+                break
+        if waited >= hi:
             break
         time.sleep(2)
     res = {"waited_s": round(waited, 1), "start_c": start, "end_c": cur, "target_c": target,
-           "timed_out": not ok}
-    if not ok:
-        log(f"cooldown timed out after {waited:.0f} s at cpu {cur.get('cpu')} / gpu {cur.get('gpu')} C")
+           "ended_by": reason, "timed_out": reason == "max_s"}
+    log(f"cooldown done after {waited:.0f} s ({reason}) at cpu {cur.get('cpu')} / gpu {cur.get('gpu')} C")
     return res
+
+
+def expected_seconds(sc: dict, sess: dict) -> float:
+    """Rough session length for one scenario (for the estimate shown up front)."""
+    if sc["kind"] == "vkmark":
+        scene = sum(float(m.group(1)) for b in (sc.get("vkmark", {}).get("benchmarks") or [])
+                    for m in [re.search(r"duration=(\d+(?:\.\d+)?)", b)] if m)
+        per = 3 + (scene or 60)
+    elif sc.get("capture") == "until_exit":
+        per = float(sc.get("expected_s") or 120) + 25
+    else:
+        per = float(sc.get("settle_s", 30)) + float(sc.get("duration_s", 60)) + 25
+    cool = min(float(sess["cooldown"]["max_s"]), 45.0)  # typical: levels off well before max_s
+    return (sc["warmup"] + sc["runs"]) * (per + cool)
 
 
 def flags_for(sc_result: dict, sess: dict) -> list[str]:
@@ -101,11 +135,18 @@ def flags_for(sc_result: dict, sess: dict) -> list[str]:
         if r["status"] != "ok":
             fl.append(f"{r['run']} failed: {r.get('error')}")
         if (r.get("cooldown") or {}).get("timed_out"):
-            fl.append(f"{r['run']} started before temps returned to baseline")
+            fl.append(f"{r['run']} started while still cooling (hit the {sess['cooldown']['max_s']} s cooldown limit)")
         if r["metrics"].get("throttled"):
             fl.append(f"{r['run']} thermal throttling: {r['metrics']['throttled']}")
         if r.get("warning"):
             fl.append(f"{r['run']}: {r['warning']}")
+    starts = [((r.get("cooldown") or {}).get("end_c") or {}) for r in runs]
+    if len(starts) > 1:
+        for g in ("cpu", "gpu"):
+            vals = [x.get(g) for x in starts if x.get(g) is not None]
+            if vals and max(vals) - min(vals) > sess["cooldown"].get("start_spread_c", 5):
+                fl.append(f"measured runs started at different {g.upper()} temperatures "
+                          f"({min(vals):.0f}-{max(vals):.0f} C): heat may affect the comparison")
     srcs = {r["metrics"].get("power_source") for r in runs}
     if len(srcs) > 1:
         fl.append(f"power source changed between runs: {sorted(s for s in srcs if s)}")
@@ -149,7 +190,8 @@ class Session:
         self.dir.mkdir(parents=True)
         shutil.copy2(self.matrix_path, self.dir / "matrix.yaml")
         sess = self.m["session"]
-        log(f"session {self.dir.name}: {len(self.m['scenarios'])} scenario(s)")
+        est = sum(expected_seconds(sc, sess) for sc in self.m["scenarios"]) + 15
+        log(f"session {self.dir.name}: {len(self.m['scenarios'])} scenario(s), about {est / 60:.0f} min")
         snap = sysinfo.snapshot()
         log("measuring idle baseline temps (10 s)")
         baseline = measure_baseline()
@@ -240,7 +282,7 @@ class Session:
         # raw CSV: one row per run
         cols = ["scenario", "title", "run", "warmup", "status", "started", "ended", "error",
                 "proton", "proton_version", "game_arch", "x86_emulated", "emulation",
-                "cooldown_waited_s", "cooldown_timed_out"]
+                "cooldown_waited_s", "cooldown_ended_by", "cooldown_timed_out"]
         mcols = []
         for res in self.results:
             for r in res["runs"]:
@@ -261,6 +303,7 @@ class Session:
                            "game_arch": emu.get("game_arch", ""), "x86_emulated": emu.get("x86_emulated", ""),
                            "emulation": emu.get("method", ""),
                            "cooldown_waited_s": r["cooldown"]["waited_s"],
+                           "cooldown_ended_by": r["cooldown"].get("ended_by", ""),
                            "cooldown_timed_out": r["cooldown"]["timed_out"],
                            **{k: v for k, v in r["metrics"].items() if not isinstance(v, (dict, list))}}
                     w.writerow(row)

@@ -54,6 +54,7 @@ def cmd_run(a):
         if s["runs"] < 3:
             log(f"note: {s['name']} has {s['runs']} measured run(s); results will be flagged (want >= 3)")
     if a.dry_run:
+        m["estimate_s"] = round(sum(session.expected_seconds(sc, m["session"]) for sc in m["scenarios"]) + 15)
         print(json.dumps(m, indent=2))
         return
     d = session.Session(m, a.tag, Path(a.matrix), device=a.device_label).run()

@@ -4,10 +4,10 @@ session:
   runs: 3            # measured runs per scenario
   warmup: 1          # discarded first run
   variance_cv_pct: 3 # flag scenarios whose average FPS / score varies more than this
-  cooldown:
-    tolerance_c: 3   # start a run once CPU and GPU are within 3 C of the idle baseline
-    min_s: 20
-    max_s: 600
+  cooldown:          # between runs, ends at whichever comes first:
+    tolerance_c: 3   #   CPU and GPU within 3 C of the idle baseline
+    plateau_s: 15    #   temperatures levelled off (fell < 1 C in 15 s)
+    max_s: 90        #   90 s at most
 
 scenarios:
   - name: vkmark-1080p
@@ -17,12 +17,12 @@ scenarios:
       winsys: headless       # offscreen: no compositor, pure GPU/driver throughput
       size: 1920x1080
       benchmarks:
-        - vertex:duration=10
-        - texture:duration=10
-        - shading:shading=phong:duration=10
-        - cube:duration=10
-        - effect2d:duration=10
-        - desktop:duration=10
+        - vertex:duration=5
+        - texture:duration=5
+        - shading:shading=phong:duration=5
+        - cube:duration=5
+        - effect2d:duration=5
+        - desktop:duration=5
 
   - name: tr2013-dx11-proton11-arm64
     title: Tomb Raider (2013)
@@ -37,6 +37,7 @@ scenarios:
     trim_start_s: 6           # loading screen before the flythrough
     trim_end_s: 1
     timeout_s: 600
+    expected_s: 95            # typical run length, for the time estimate
     wine_registry:            # the game's launcher settings (vsync off = uncapped)
       'HKCU\Software\Crystal Dynamics\Tomb Raider\Graphics':
         Fullscreen: 1

@@ -97,7 +97,8 @@ def _conditions(summary: dict, meta: dict, results: list[dict]) -> list[list]:
         ["Battery", f"{first.get('battery_pct_start', pw['battery_pct'])}% at first run -> "
                     f"{last.get('battery_pct_end', pw['battery_pct'])}% at last run ({pw['battery_status']} at start)"],
         ["Idle baseline temps", f"CPU {meta['baseline_c'].get('cpu')} C, GPU {meta['baseline_c'].get('gpu')} C "
-                                f"(runs start within +{meta['matrix']['session']['cooldown']['tolerance_c']} C)"],
+                                f"(cooldown: back within +{meta['matrix']['session']['cooldown']['tolerance_c']} C, "
+                                f"levelled off, or {meta['matrix']['session']['cooldown']['max_s']} s)"],
         ["Device", f"{sysd['model']} ({sysd['soc']})"],
         ["OS", f"{sysd['os']['name']} {sysd['os']['version_id']} (build {sysd['os']['build_id']})"],
         ["Kernel", sysd["kernel"]["release"]],

@@ -129,6 +129,10 @@ class Remote:
 
     # -- deploy --------------------------------------------------------------------
     def deploy(self) -> None:
+        busy = self.running_units()
+        if busy:  # never swap the code under a running session
+            log(f"not updating the harness on {self.target}: {busy[0]} is running")
+            return
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
             def filt(ti: tarfile.TarInfo):

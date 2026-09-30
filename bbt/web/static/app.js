@@ -535,7 +535,8 @@
           return;
         }
         const sess = r.matrix.session;
-        scen.appendChild(h("p", { class: "small muted" }, `${sess.runs} measured + ${sess.warmup} warm-up per scenario, cooldown to baseline +${sess.cooldown.tolerance_c} °C`));
+        scen.appendChild(h("p", { class: "small muted" }, `About ${Math.max(1, Math.round((r.matrix.estimate_s || 0) / 60))} min per device · ` +
+          `${sess.runs} measured + ${sess.warmup} warm-up per scenario · cooldown up to ${sess.cooldown.max_s} s between runs`));
         r.matrix.scenarios.forEach(s => scen.appendChild(h("label", null, h("input", { type: "checkbox", name: "scen", value: s.name, checked: true }),
           h("span", null, h("b", null, s.name), h("span", { class: "muted" }, ` · ${s.title} · ${s.kind}${s.proton ? " · " + s.proton : ""}`)))));
       } catch (e) { scen.textContent = ""; scen.appendChild(banner(e.message, "error")); }
