@@ -49,5 +49,5 @@ scenarios:
     trim_start_s: 6                  # loading screen before the flythrough
     trim_end_s: 1
     launch_timeout_s: 240            # Wine starts up first
-    timeout_s: 600
+    timeout_s: 240                   # the benchmark takes ~85 s: a frozen game fails after 4 min
     expected_s: 120

@@ -64,6 +64,21 @@ class RunError(RuntimeError):
     pass
 
 
+def _end_loop(dev: "Android", pid: int | None, stop_path: str, files: str, proc) -> None:
+    """Stop a device-side sh loop: its stop file first, then its pid if it is still
+    there (closing our adb connection does not always end the shell on the device),
+    then remove its files."""
+    try:
+        if pid:
+            if wait_until(lambda: not dev.adb.sh(f"ls -d /proc/{pid} 2>/dev/null"), 5, 0.5) is False:
+                dev.adb.sh(f"kill {pid}")
+        dev.adb.sh(f"rm -f {files}")
+    except AdbError:
+        pass
+    if proc and proc.poll() is None:
+        proc.kill()
+
+
 def _i(v, default=0) -> int:
     try:
         return int(str(v).split()[0])
@@ -617,7 +632,7 @@ class AndroidSampler:
         tag = uuid.uuid4().hex[:8]   # own files: a live readout can run next to a session
         self.sh_path, self.stop_path = f"{DIR}/sampler-{tag}.sh", f"{DIR}/sampler-{tag}.stop"
         self.script = (
-            f"rm -f {self.stop_path}; n=0\n"
+            f"echo \"P $$\"; rm -f {self.stop_path}; n=0\n"
             f"while [ ! -e {self.stop_path} ] && [ $n -lt {n_max} ]; do\n"
             "  read up x < /proc/uptime; echo \"@ $up\"\n"
             "  while IFS= read -r l; do case \"$l\" in cpu*) echo \"$l\";; *) break;; esac; done < /proc/stat\n"
@@ -631,6 +646,7 @@ class AndroidSampler:
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._loop, daemon=True)
         self._p = None
+        self.rpid = None
 
     def start(self):
         self.dev.adb.push_text(self.script, self.sh_path)
@@ -652,12 +668,7 @@ class AndroidSampler:
         except AdbError:
             pass
         self._t.join(timeout=self.interval * 3 + 10)
-        if self._p and self._p.poll() is None:
-            self._p.kill()
-        try:
-            self.dev.adb.sh(f"rm -f {self.sh_path} {self.stop_path}")
-        except AdbError:
-            pass
+        _end_loop(self.dev, self.rpid, self.stop_path, f"{self.sh_path} {self.stop_path}", self._p)
         return self.rows
 
     def _loop(self):
@@ -675,6 +686,9 @@ class AndroidSampler:
                 block: list[str] = []
                 for raw in self._p.stdout:
                     line = raw.decode(errors="replace").rstrip("\r\n")
+                    if line.startswith("P ") and not block:
+                        self.rpid = _i(line[2:], None)
+                        continue
                     if line != ".":
                         block.append(line)
                         continue
@@ -767,7 +781,7 @@ class LatencyPoller:
         self.sh_path, self.stop_path, tmp = (f"{DIR}/frames-{tag}.sh", f"{DIR}/frames-{tag}.stop",
                                              f"{DIR}/frames-{tag}.txt")
         self.script = (
-            f"PAT={shlex.quote(pattern)}; L=; n=0; rm -f {self.stop_path}\n"
+            f"echo \"P $$\"; PAT={shlex.quote(pattern)}; L=; n=0; rm -f {self.stop_path}\n"
             f"while [ ! -e {self.stop_path} ] && [ $n -lt {int(max_s / 0.4)} ]; do\n"
             "  n=$((n+1))\n"
             "  if [ -z \"$L\" ]; then\n"
@@ -783,6 +797,8 @@ class LatencyPoller:
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._loop, daemon=True)
         self._p = None
+        self.rpid = None
+        self._tmp = tmp
 
     def start(self):
         self.dev.adb.push_text(self.script, self.sh_path)
@@ -796,12 +812,7 @@ class LatencyPoller:
         except AdbError:
             pass
         self._t.join(timeout=10)
-        if self._p and self._p.poll() is None:
-            self._p.kill()
-        try:
-            self.dev.adb.sh(f"rm -f {self.sh_path} {self.stop_path}")
-        except AdbError:
-            pass
+        _end_loop(self.dev, self.rpid, self.stop_path, f"{self.sh_path} {self.stop_path} {self._tmp}", self._p)
 
     def _loop(self):
         prev_max = None
@@ -818,6 +829,8 @@ class LatencyPoller:
                     t = _i(line[2:], 0)
                     if 0 < t < 2**62:  # INT64_MAX: not presented yet
                         block.append(t)
+                elif line.startswith("P "):
+                    self.rpid = _i(line[2:], None)
                 elif line.startswith("L "):
                     self.layers.append(line[2:].strip())
                     prev_max = None
