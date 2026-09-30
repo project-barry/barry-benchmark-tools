@@ -285,6 +285,7 @@ def launch(appid: str, timeout: float = 120) -> int:
 
 def kill(appid: str, grace: float = 15) -> None:
     root = find_reaper(appid)
+    log(f"closing app {appid} (reaper {root})")
     if not root:
         return
     for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 10)):

@@ -201,6 +201,10 @@ class Session:
         write_json(self.dir / "session.json", self.meta)
 
         def on_sig(signum, frame):
+            # act on the first stop only: systemd delivers SIGTERM more than once, and a
+            # second interrupt landing in the runner's cleanup would leave the game running
+            if self.stop_requested:
+                return
             self.stop_requested = True
             raise KeyboardInterrupt
         old = signal.signal(signal.SIGTERM, on_sig)
