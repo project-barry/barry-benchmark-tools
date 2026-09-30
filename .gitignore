@@ -6,3 +6,4 @@ opt/
 scratch/
 .DS_Store
 remote.conf
+.bbt-web/

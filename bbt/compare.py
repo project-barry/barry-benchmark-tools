@@ -67,29 +67,28 @@ def _run_tools(summary: dict) -> dict:
     return out
 
 
-def compare(ref_a: str, ref_b: str, all_metrics: bool = False) -> str:
+def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
+    """Structured comparison (used by `bench compare` and the web app)."""
     da, db = resolve(ref_a), resolve(ref_b)
     sa, sb = read_json(da / "summary.json"), read_json(db / "summary.json")
     ma, mb = read_json(da / "session.json"), read_json(db / "session.json")
-    out = [f"# Compare: {sa['tag']} -> {sb['tag']}", "",
-           f"- A: {da.name}", f"- B: {db.name}",
-           "- Change = (B - A) / A. 'better'/'worse' by metric direction; '~ noise' when",
-           "  the change is smaller than the larger run-to-run CV of the two sessions.", ""]
     rows_b = {r["name"]: r for r in sb["scenarios"]}
+    names_a = {r["name"] for r in sa["scenarios"]}
     ta, tb = _run_tools(sa), _run_tools(sb)
+    scenarios = []
     for res_a in sa["scenarios"]:
         res_b = rows_b.get(res_a["name"])
+        sc = {"name": res_a["name"], "title": res_a["title"], "only": None if res_b else "a",
+              "tool_a": ta.get(res_a["name"]), "tool_b": tb.get(res_a["name"]),
+              "flags_a": res_a["flags"], "flags_b": res_b["flags"] if res_b else [], "metrics": []}
+        scenarios.append(sc)
         if not res_b:
-            out.append(f"## {res_a['name']}\n\nOnly in A.\n")
             continue
         aa, ab = res_a["aggregate"], res_b["aggregate"]
         km = [(k, l) for k, l in key_metrics(aa) if k in ab]
-        labels = dict(km)
-        keys = [k for k, _ in km]
         if all_metrics:
-            keys += [k for k in aa if k in ab and k not in keys]
-        rows = []
-        for k in keys:
+            km += [(k, k) for k in aa if k in ab and k not in dict(km)]
+        for k, label in km:
             a, b = aa[k]["mean"], ab[k]["mean"]
             if not a:
                 continue
@@ -97,26 +96,47 @@ def compare(ref_a: str, ref_b: str, all_metrics: bool = False) -> str:
             noise = max(aa[k].get("cv_pct") or 0, ab[k].get("cv_pct") or 0)
             d = direction(k)
             if abs(pct) <= noise or abs(pct) < 0.5:
-                verdict = "~ noise"
+                verdict = "noise"
             elif d == 0:
                 verdict = ""
             else:
                 verdict = "better" if pct * d > 0 else "worse"
-            rows.append([labels.get(k, k), a, b, f"{pct:+.1f}%", verdict,
-                         f"{aa[k]['n']}/{ab[k]['n']}"])
-        out.append(f"## {res_a['name']} ({res_a['title']})\n")
-        if ta.get(res_a["name"]) != tb.get(res_b["name"]):
-            out.append(f"Proton differs: A {ta.get(res_a['name'])}, B {tb.get(res_b['name'])}\n")
+            sc["metrics"].append({"key": k, "label": label, "a": a, "b": b, "pct": round(pct, 2),
+                                  "verdict": verdict, "direction": d, "noise_pct": noise,
+                                  "n_a": aa[k]["n"], "n_b": ab[k]["n"]})
+    for name, res_b in rows_b.items():
+        if name not in names_a:
+            scenarios.append({"name": name, "title": res_b["title"], "only": "b", "metrics": [],
+                              "flags_a": [], "flags_b": res_b["flags"], "tool_a": None, "tool_b": tb.get(name)})
+    return {"a": {"session": da.name, "tag": sa["tag"], "started": sa["started"]},
+            "b": {"session": db.name, "tag": sb["tag"], "started": sb["started"]},
+            "scenarios": scenarios,
+            "config_diff": [[k, a, b] for k, a, b in config_diff(ma["snapshot"], mb["snapshot"])]}
+
+
+def compare(ref_a: str, ref_b: str, all_metrics: bool = False) -> str:
+    d = compare_data(ref_a, ref_b, all_metrics)
+    out = [f"# Compare: {d['a']['tag']} -> {d['b']['tag']}", "",
+           f"- A: {d['a']['session']}", f"- B: {d['b']['session']}",
+           "- Change = (B - A) / A. 'better'/'worse' by metric direction; '~ noise' when",
+           "  the change is smaller than the larger run-to-run CV of the two sessions.", ""]
+    for sc in d["scenarios"]:
+        if sc["only"]:
+            out.append(f"## {sc['name']}\n\nOnly in {sc['only'].upper()}.\n")
+            continue
+        out.append(f"## {sc['name']} ({sc['title']})\n")
+        if sc["tool_a"] != sc["tool_b"]:
+            out.append(f"Proton differs: A {sc['tool_a']}, B {sc['tool_b']}\n")
+        rows = [[m["label"], m["a"], m["b"], f"{m['pct']:+.1f}%",
+                 "~ noise" if m["verdict"] == "noise" else m["verdict"], f"{m['n_a']}/{m['n_b']}"]
+                for m in sc["metrics"]]
         out.append(table(["Metric", "A mean", "B mean", "Change", "", "Runs A/B"], rows,
                          ["l", "r", "r", "r", "l", "r"]) if rows else "No common metrics.\n")
-        fl = [f"A: {f}" for f in res_a["flags"]] + [f"B: {f}" for f in res_b["flags"]]
+        fl = [f"A: {f}" for f in sc["flags_a"]] + [f"B: {f}" for f in sc["flags_b"]]
         if fl:
             out.append("\nFlags:\n\n" + "\n".join(f"- {f}" for f in fl) + "\n")
         out.append("")
-    for name in rows_b:
-        if name not in {r["name"] for r in sa["scenarios"]}:
-            out.append(f"## {name}\n\nOnly in B.\n")
-    diff = config_diff(ma["snapshot"], mb["snapshot"])
     out.append("## System config differences (session start)\n")
-    out.append(table(["Setting", "A", "B"], diff) if diff else "None: both sessions ran with the same settings.\n")
+    out.append(table(["Setting", "A", "B"], d["config_diff"]) if d["config_diff"]
+               else "None: both sessions ran with the same settings.\n")
     return "\n".join(out)

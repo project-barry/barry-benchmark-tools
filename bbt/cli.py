@@ -13,6 +13,7 @@ Runs on the device, or from another machine when remote.conf exists next to
   bench steam set-tool APPID TOOL     map a compat tool (restarts Steam if it changes)
   bench steam unwrap APPID            remove the harness launch options for an app
   bench setup                         fetch vkmark into ~/bench/opt (no root needed)
+  bench web [--host H] [--port P]     web app for starting and reviewing runs
 
 Remote mode only:
   bench deploy                        copy the harness to the device
@@ -95,6 +96,9 @@ def cmd_sample(a):
             while shown < len(smp.rows):
                 r = smp.rows[shown]
                 shown += 1
+                if a.json:
+                    print(json.dumps(r), flush=True)
+                    continue
                 clk = "/".join(str(r.get(k, "-")) for k in r if k.startswith("policy") and k.endswith("_mhz"))
                 print(f"t={r['t']:6.1f} cpu {r['cpu_load']}% {clk} MHz | gpu {r.get('gpu_mhz')} MHz | "
                       f"cpu {r.get('cpu_temp_c')} C gpu {r.get('gpu_temp_c')} C | {r['power_source']} "
@@ -128,6 +132,11 @@ def cmd_steam(a):
     elif a.action == "unwrap":
         steam.configure(a.appid, None, "")
         print("launch options cleared")
+
+
+def cmd_web(a):
+    from .web.server import serve
+    serve(a.host, a.port, not a.no_browser)
 
 
 def cmd_setup(a):
@@ -187,6 +196,7 @@ def main(argv=None):
     sp.add_parser("snapshot", help="print system config JSON").set_defaults(fn=cmd_snapshot)
     s = sp.add_parser("sample", help="live sensor readout")
     s.add_argument("seconds", nargs="?", type=float, default=30)
+    s.add_argument("--json", action="store_true", help="one JSON object per line")
     s.set_defaults(fn=cmd_sample)
     st = sp.add_parser("steam", help="Steam helpers")
     st.add_argument("action", choices=["status", "tools", "set-tool", "unwrap"])
@@ -194,6 +204,11 @@ def main(argv=None):
     st.add_argument("tool", nargs="?")
     st.set_defaults(fn=cmd_steam)
     sp.add_parser("setup", help="fetch vkmark").set_defaults(fn=cmd_setup)
+    w = sp.add_parser("web", help="start the web app (run and review sessions in a browser)")
+    w.add_argument("--host", default="127.0.0.1", help="address to listen on (0.0.0.0 = every interface)")
+    w.add_argument("--port", type=int, default=8765)
+    w.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    w.set_defaults(fn=cmd_web)
     argv = sys.argv[1:] if argv is None else argv
     a = p.parse_args(argv)
     if a.cmd == "steam" and a.action in ("status", "set-tool", "unwrap") and not a.appid:
@@ -208,7 +223,7 @@ def main(argv=None):
         a.fn(a)
         return
     util.RESULTS = remote.local_results(conf)
-    if a.cmd in ("list", "compare"):
+    if a.cmd in ("list", "compare", "web"):
         a.fn(a)
         return
     r = remote.Remote(conf)
@@ -217,7 +232,7 @@ def main(argv=None):
     if a.cmd in handlers:
         handlers[a.cmd](r, a)
     else:  # snapshot, sample, steam, setup: run on the device as-is
-        remote.passthrough(r, argv, tty=a.cmd == "sample")
+        remote.passthrough(r, argv, tty=a.cmd == "sample" and sys.stdout.isatty())
 
 
 if __name__ == "__main__":

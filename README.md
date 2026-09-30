@@ -48,6 +48,7 @@ press Ctrl-C:
 | `bench deploy`         | copy the harness to the device without running anything           |
 | `bench list`           | local sessions                                                     |
 | `bench compare A B`    | local sessions, by tag or folder name                              |
+| `bench web`            | the web app (below)                                                |
 
 Add `--keep-remote` to keep the device copy. Every other command (`snapshot`,
 `sample 30`, `steam tools`, `steam status <appid>`, `steam set-tool <appid>
@@ -55,6 +56,48 @@ Add `--keep-remote` to keep the device copy. Every other command (`snapshot`,
 
 Without a `remote.conf`, `bench` works locally on the device itself, with
 results in `~/bench/results`.
+
+## Web app
+
+```sh
+./bench web                      # opens http://localhost:8765 in your browser
+./bench web --host 0.0.0.0       # also reachable from other devices on your network
+```
+
+It's a browser front end for the same harness. It works in current Chrome,
+Edge, Firefox and Safari on Windows, macOS, Linux and ChromeOS, including
+phones and tablets.
+
+- **Sessions**: every saved session, with its headline numbers and flag count.
+  Tick two to compare them.
+- **Session**: stat tiles, flags, a per-run chart and table for each scenario,
+  the Markdown reports (rendered, or as plain text) and downloads. Open a run
+  to see its frame-time chart (the trimmed parts are shaded) and its CPU/GPU
+  clocks, temperatures, power and load over time.
+- **Compare**: the % change per metric, marked better / worse / within noise,
+  plus the system settings that differ between the two sessions.
+- **New run**: pick a matrix, set a tag, check the scenarios on the device,
+  start the run, and watch its output live. In remote mode the run continues
+  on the device if you close the page; the results come back here when it
+  ends.
+- **Device**: what is running on the device, results not copied here yet,
+  current clocks and settings, live sensors, and buttons for fetch / stop /
+  update / install vkmark.
+- **Matrices**: edit, create and check matrix files in `matrices/`.
+
+The server uses only Python's standard library and loads nothing from the
+internet. It runs on the machine that drives the device (macOS or Linux),
+while the browser can be anywhere. Runs, pulls and so on are ordinary
+`bench` commands started by the server, so the web app and the CLI always
+agree.
+
+Access: the server prints a link with a token. Opening it signs that browser
+in (the cookie is HttpOnly and SameSite=Strict), and every request needs it.
+Changes also need a custom header that other websites cannot send. By default
+it listens on 127.0.0.1 only. With `--host 0.0.0.0`, anyone on your network
+who has the link can start runs, so only share the link with people you
+trust. The token is kept in `.bbt-web/token` (git-ignored); delete that file
+to issue a new one.
 
 ## What a run does
 

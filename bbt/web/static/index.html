@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Barry Benchmark Tools</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M7 22l6-7 5 4 7-9' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">Barry Benchmark Tools <span>bench</span></a>
+    <nav class="nav" aria-label="Main">
+      <a href="#/" data-nav="sessions">Sessions</a>
+      <a href="#/compare" data-nav="compare">Compare</a>
+      <a href="#/run" data-nav="run">New run</a>
+      <a href="#/device" data-nav="device">Device</a>
+      <a href="#/matrices" data-nav="matrices">Matrices</a>
+    </nav>
+    <div class="spacer"></div>
+    <div class="mode" id="mode"></div>
+    <button class="iconbtn" id="theme" type="button" aria-label="Switch theme">Theme</button>
+  </header>
+  <div class="jobbar hidden" id="jobbar" role="status" aria-live="polite"></div>
+  <main id="main" tabindex="-1"></main>
+  <script src="/md.js"></script>
+  <script src="/charts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
