@@ -54,6 +54,13 @@ def cmd_run(a):
             s["warmup"] = a.warmup
         if s["runs"] < 3:
             log(f"note: {s['name']} has {s['runs']} measured run(s); results will be flagged (want >= 3)")
+    from .devices import RUNS, can_run
+    kinds = sorted({s["kind"] for s in m["scenarios"]})
+    plat = getattr(a, "platform", None)
+    if not can_run({"kind": "android"} if plat else None, kinds):  # before a session folder exists
+        dev_kinds = RUNS["android" if plat else "ssh"]
+        raise SystemExit(f"{a.matrix} has {', '.join(kinds)} scenarios; this "
+                         f"{'Android' if plat else 'SteamOS'} device runs {', '.join(sorted(dev_kinds))} scenarios only")
     if a.dry_run:
         m["estimate_s"] = round(sum(session.expected_seconds(sc, m["session"]) for sc in m["scenarios"]) + 15)
         print(json.dumps(m, indent=2))

@@ -40,6 +40,15 @@ class DeviceError(ValueError):
     pass
 
 
+# the scenario kinds each kind of device can run (no devices: this machine, SteamOS)
+RUNS = {"android": {"android"}, "ssh": {"vkmark", "steam"}}
+
+
+def can_run(dev: dict | None, kinds: list[str]) -> bool:
+    """True when every scenario kind of a matrix runs on this device."""
+    return bool(kinds) and set(kinds) <= RUNS["android" if dev and dev.get("kind") == "android" else "ssh"]
+
+
 def valid_host(host: str) -> bool:
     try:
         ipaddress.ip_address(host.strip("[]"))

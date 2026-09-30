@@ -407,6 +407,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             md = app.matrices_dir()
             if method == "GET" and len(parts) == 1:
                 return self._json(sorted(p.name for p in md.glob("*.y*ml")))
+            if method == "GET" and parts == ["matrices", "kinds"]:  # which devices can run each matrix
+                from ..config import scenario_kinds
+                return self._json({"matrices": {p.name: scenario_kinds(p) for p in sorted(md.glob("*.y*ml"))},
+                                   "devices": {k: sorted(v) for k, v in app.devices_mod.RUNS.items()}})
             if len(parts) == 2:
                 if not MATRIX_NAME.match(parts[1]):
                     raise ValueError("matrix names: letters, digits, . _ - and .yaml")
@@ -522,6 +526,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ValueError("pick a matrix")
             if not TAG.match(tag):
                 raise ValueError("tag: letters, digits, space . _ - (max 60)")
+            from ..config import scenario_kinds
+            kinds = scenario_kinds(app.matrices_dir() / name)
+            d = app.device(dev) if dev else None
+            if not app.devices_mod.can_run(d, kinds):
+                where_ = d["name"] if d else "this device"
+                raise ValueError(f"{name} has {', '.join(kinds) or 'no'} scenarios, which {where_} cannot run")
             args = ["run", f"matrices/{name}", "--tag", tag]
             for k in ("runs", "warmup"):
                 if b.get(k) not in (None, ""):

@@ -218,14 +218,25 @@
       const [b, a] = [...picked]; // list is newest first: older one is A
       location.hash = `#/compare?a=${enc(a)}&b=${enc(b)}`;
     } }, "Compare selected");
-    const hint = h("span", { class: "muted small" }, "Tick two sessions (any devices) to compare them.");
+    const hint = h("span", { class: "muted small" }, "Tick two sessions to compare them, or any to delete.");
+    const del = h("button", { class: "danger", disabled: true, onclick: async () => {
+      const names = [...picked];
+      const shown = names.map(n => { const s = list.find(x => x.name === n); return `  ${s.tag} (${sessionDevice(s)}, ${when(s.started)})`; });
+      if (!confirm(`Delete ${names.length} session${names.length > 1 ? "s" : ""} from this computer? This cannot be undone.\n\n${shown.join("\n")}`)) return;
+      del.disabled = true;
+      const errs = [];
+      for (const n of names) {
+        try { await api(`sessions/${enc(n)}`, { method: "DELETE" }); } catch (e) { errs.push(`${n}: ${e.message}`); }
+      }
+      if (errs.length) alert(`Some sessions were not deleted:\n${errs.join("\n")}`);
+      route();
+    } }, "Delete selected");
     const rows = list.map(s => {
       const box = h("input", { type: "checkbox", "aria-label": `Select ${s.tag}`, onclick: e => e.stopPropagation(),
         onchange: e => {
           if (e.target.checked) picked.add(s.name); else picked.delete(s.name);
-          if (picked.size > 2) { const first = [...picked][0]; picked.delete(first);
-            const other = main.querySelector(`input[data-s="${CSS.escape(first)}"]`); if (other) other.checked = false; }
           cmp.disabled = picked.size !== 2;
+          del.disabled = picked.size === 0;
           tr.classList.toggle("sel", e.target.checked);
         } });
       box.dataset.s = s.name;
@@ -258,7 +269,7 @@
     setPage("Sessions",
       h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Sessions"),
         h("p", { class: "muted" }, `${list.length} saved in ${info ? info.results : "results"}`)),
-        h("div", { class: "btnrow" }, devIds.length > 1 ? devSel : null, hint, cmp, h("a", { class: "btn", href: "#/run" }, "New run"))),
+        h("div", { class: "btnrow" }, devIds.length > 1 ? devSel : null, hint, cmp, del, h("a", { class: "btn", href: "#/run" }, "New run"))),
       list.length ? card(t) : card(h("p", null, "No sessions yet. "), h("a", { href: "#/run" }, "Start a run")));
   }
 
@@ -517,22 +528,46 @@
   // ---------------------------------------------------------------- new run
   async function pageNewRun() {
     loading("matrices");
-    let mats, jobs;
-    try { [mats, jobs] = await Promise.all([api("matrices"), api("jobs")]); } catch (e) { return failed(e); }
+    let mats, jobs, kinds;
+    try { [mats, jobs, kinds] = await Promise.all([api("matrices"), api("jobs"), api("matrices/kinds")]); } catch (e) { return failed(e); }
     const remote = info && info.mode === "remote";
     const devs = remote ? info.devices : [];
-    const matrix = h("select", { id: "matrix" }, mats.map(m => h("option", { value: m, selected: m === "first-light.yaml" }, m)));
+    // which device can run which matrix: every scenario kind must be one the device runs
+    const devRuns = d => kinds.devices[d && d.kind === "android" ? "android" : "ssh"];
+    const canRun = (d, m) => { const k = kinds.matrices[m] || []; return k.length > 0 && k.every(x => devRuns(d).includes(x)); };
+    const system = m => { const k = kinds.matrices[m] || []; return k.length && k.every(x => x === "android") ? "Android"
+      : k.length && k.every(x => x !== "android") ? "SteamOS" : "mixed"; };
+    const usable = m => remote ? devs.some(d => canRun(d, m)) : canRun(null, m);
+    const firstOk = mats.includes("first-light.yaml") && usable("first-light.yaml") ? "first-light.yaml" : mats.find(usable);
+    const matrix = h("select", { id: "matrix" }, mats.map(m => h("option", { value: m, selected: m === firstOk, disabled: !usable(m) },
+      `${m} (${system(m)}${usable(m) ? "" : ", no device can run it"})`)));
     const tag = h("input", { type: "text", id: "tag", placeholder: "e.g. baseline, gpu-cap-550", maxlength: 60, required: true, autocomplete: "off" });
     const runs = h("input", { type: "number", min: 1, max: 50, placeholder: "from matrix" });
     const warm = h("input", { type: "number", min: 0, max: 10, placeholder: "from matrix" });
-    const devBox = h("div", { class: "checks" }, devs.map(d => h("label", null,
+    const devBox = h("div", { class: "checks" }, devs.map(d => { const l = h("label", null,
       h("input", { type: "checkbox", name: "dev", value: d.id, checked: d.id === info.default_device, disabled: d.busy }),
-      h("span", null, h("b", null, d.name), h("span", { class: "muted" }, ` · ${devAddr(d)}${d.busy ? " · busy" : ""}`)))));
+      h("span", null, h("b", null, d.name), h("span", { class: "muted" }, ` · ${devAddr(d)}${d.busy ? " · busy" : ""}`),
+        h("span", { class: "muted why" }))); l.dataset.dev = d.id; return l; }));
+    function applyCompat() {  // grey out the devices that cannot run the chosen matrix
+      devBox.querySelectorAll("label").forEach(l => {
+        const d = devs.find(x => x.id === l.dataset.dev), box = l.querySelector("input"), ok = canRun(d, matrix.value);
+        box.disabled = d.busy || !ok;
+        if (!ok) box.checked = false;
+        l.style.opacity = ok ? "" : "0.45";
+        l.title = ok ? "" : `${matrix.value} needs ${system(matrix.value) === "Android" ? "an Android" : "a SteamOS"} device`;
+        l.querySelector(".why").textContent = ok ? "" : ` · cannot run ${matrix.value}`;
+      });
+      if (remote && !pickedDevs().length) {  // keep one device picked when the default one cannot run it
+        const b = [...devBox.querySelectorAll("input")].find(x => !x.disabled);
+        if (b) b.checked = true;
+      }
+    }
     const scen = h("div", { class: "checks" }, h("span", { class: "muted small" }, "Check the matrix to list its scenarios."));
     const msg = h("div");
     const start = h("button", { class: "primary", type: "submit" }, "Start run");
     const pickedDevs = () => [...devBox.querySelectorAll("input:checked")].map(x => x.value);
     async function check() {
+      applyCompat();
       scen.textContent = "";
       const dev = pickedDevs()[0] || info.default_device;
       scen.appendChild(h("span", { class: "muted small" }, remote ? `Checking on ${devName(dev)}...` : "Checking..."));
@@ -595,7 +630,7 @@
         h("span", null, i ? ", " : "", h("a", { href: `#/job/${enc(j.id)}` }, j.label))))) : null,
       remote && !devs.length ? banner(h("span", null, "No devices yet. ", h("a", { href: "#/devices" }, "Add one")), "error") : null,
       card(form));
-    if (mats.length) check();
+    if (mats.length && firstOk) check(); else applyCompat();
   }
 
   // ---------------------------------------------------------------- jobs

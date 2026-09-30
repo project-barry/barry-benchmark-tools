@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 
 try:
@@ -64,3 +65,16 @@ def load(path: Path, label: str | None = None) -> dict:
     if not scenarios:
         raise SystemExit("matrix has no enabled scenarios")
     return {"session": session, "scenarios": scenarios, "source": label or str(path)}
+
+
+def scenario_kinds(path: Path) -> list[str]:
+    """The scenario kinds a matrix uses (which devices can run it). Falls back to
+    reading the text when the file does not load (no PyYAML, or a matrix with errors)."""
+    try:
+        return sorted({s["kind"] for s in load(Path(path))["scenarios"]})
+    except SystemExit:
+        text = Path(path).read_text()
+        kinds = set(re.findall(r"^\s*-?\s*kind:\s*([\w-]+)", text, re.M))
+        if re.search(r"^\s*-?\s*appid:", text, re.M):
+            kinds.add("steam")
+        return sorted(kinds)
