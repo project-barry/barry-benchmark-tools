@@ -197,6 +197,7 @@ def render(title: str, summary: dict, meta: dict, results: list[dict]) -> str:
         "",
         f"- Session: {summary['session']}",
         f"- Tag: {summary['tag']}",
+        f"- Device: {summary.get('device') or meta['snapshot']['system'].get('model')}",
         f"- Started: {started:%Y-%m-%d %H:%M}" + (f", ended {ended:%H:%M}" if ended else ""),
         f"- Matrix: {meta['matrix']['source']}",
         f"- Scenarios: {', '.join(r['name'] for r in results)}",

@@ -1,6 +1,7 @@
 """Remote mode: drive the harness on the device from another machine.
 
-Active when a `remote.conf` sits next to `bench` (or BBT_TARGET is set). Then
+Active when devices.json lists a device (see devices.py; a remote.conf from
+before is imported once), or BBT_TARGET is set. Then
 `bench run` deploys the harness, starts the session on the device as a
 systemd user unit (it survives SSH drops and a local Ctrl-C), streams its log,
 and pulls the finished session folder into the local results directory.
@@ -8,11 +9,8 @@ The device copy is deleted only after the pulled copy checks out (same file
 count and bytes). compare and list work on the local results; the other
 commands run on the device.
 
-remote.conf (key=value, # comments):
-    target=steamos@<device>          # ssh destination (the user that runs Steam)
-    ssh_opts=-o SomeOption=value     # extra ssh options (optional)
-    results=results                  # local results folder, relative to bench (optional)
-    remote_dir=bench                 # harness folder on the device, relative to ~ (optional)
+Every run is labelled with its device id, so sessions from several devices
+can live side by side in the local results and be compared.
 """
 from __future__ import annotations
 
@@ -32,20 +30,23 @@ DEPLOY = ["bench", "bbt", "bin", "matrices", "README.md"]
 SKIP = {"__pycache__", ".DS_Store"}
 
 
-def load_conf() -> dict | None:
-    conf = {}
-    f = ROOT / "remote.conf"
-    if f.exists():
-        for line in f.read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if "=" in line:
-                k, v = line.split("=", 1)
-                conf[k.strip()] = v.strip()
+def load_conf(device: str | None = None) -> dict | None:
+    """ssh settings for a device from devices.json (the default one unless
+    `device` is given). BBT_TARGET / BBT_SSH_OPTS override for one-off use.
+    None = no remote device: run locally (on the device itself)."""
+    from . import devices
     if os.environ.get("BBT_TARGET"):
-        conf["target"] = os.environ["BBT_TARGET"]
-    if os.environ.get("BBT_SSH_OPTS"):
-        conf["ssh_opts"] = os.environ["BBT_SSH_OPTS"]
-    return conf if conf.get("target") else None
+        return {"target": os.environ["BBT_TARGET"], "ssh_opts": os.environ.get("BBT_SSH_OPTS", ""),
+                "device": device or "adhoc"}
+    data = devices.load()
+    if not data["devices"]:
+        if device:
+            raise SystemExit(f"no device {device} (bench devices list)")
+        return None
+    dev = devices.get(device)
+    if dev is None:
+        raise SystemExit(f"no device {device} (bench devices list)")
+    return devices.conf(dev, data)
 
 
 def local_results(conf: dict) -> Path:
@@ -56,10 +57,13 @@ def local_results(conf: dict) -> Path:
 class Remote:
     def __init__(self, conf: dict):
         self.target = conf["target"]
+        self.device = conf.get("device") or "default"
         self.rdir = conf.get("remote_dir", "bench").strip("/")
         ctl = Path.home() / ".ssh" / "bbt-%C"
         self.ssh_base = ["ssh", *shlex.split(os.path.expanduser(conf.get("ssh_opts", ""))),
                          "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                         # trust a new device's host key on first contact, refuse a changed one
+                         "-o", "StrictHostKeyChecking=accept-new",
                          "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3",
                          "-o", "ControlMaster=auto", "-o", f"ControlPath={ctl}", "-o", "ControlPersist=120"]
         self.results = local_results(conf)
@@ -78,6 +82,50 @@ class Remote:
 
     def home_cmd(self, cmd: str) -> str:
         return f"cd ~/{self.rdir} && {cmd}"
+
+    # -- probe ---------------------------------------------------------------------
+    def probe(self) -> dict:
+        """Can we log in, and what does the device offer? Never raises."""
+        rd = shlex.quote(self.rdir)
+        script = (
+            'echo "user=$(id -un)"; echo "hostname=$(hostname)"; echo "arch=$(uname -m)"; echo "kernel=$(uname -r)"; '
+            '. /etc/os-release 2>/dev/null; echo "os=${PRETTY_NAME:-unknown} ${VERSION_ID:-}"; '
+            'echo "model=$(tr -d \'\\0\' < /proc/device-tree/model 2>/dev/null)"; '
+            'echo "python=$(python3 -V 2>&1)"; '
+            'echo "pyyaml=$(python3 -c \'import yaml; print(yaml.__version__)\' 2>/dev/null)"; '
+            'echo "steam_service=$(systemctl --user is-active steam.service 2>/dev/null)"; '
+            'echo "gamescope=$(pgrep -a gamescope 2>/dev/null | head -1 | cut -c1-80)"; '
+            'echo "mangohud=$(command -v mangohud)"; '
+            f'echo "harness=$(test -x ~/{rd}/bench && echo yes)"; '
+            f'echo "vkmark=$(test -x ~/{rd}/opt/usr/bin/vkmark && echo yes)"')
+        try:
+            p = subprocess.run(self.ssh_base + [self.target, script], capture_output=True, timeout=25)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "problem": "unreachable", "detail": "no answer within 25 s"}
+        err = p.stderr.decode(errors="replace").strip()
+        if p.returncode == 255:
+            low = err.lower()
+            if "permission denied" in low:
+                kind = "auth"
+            elif "host key" in low or "identification has changed" in low:
+                kind = "hostkey"
+            else:
+                kind = "unreachable"
+            return {"ok": False, "problem": kind, "detail": err[-400:]}
+        facts = {}
+        for line in p.stdout.decode(errors="replace").splitlines():
+            k, _, v = line.partition("=")
+            if k:
+                facts[k.strip()] = v.strip()
+        missing = []
+        if not facts.get("python", "").startswith("Python 3"):
+            missing.append("python3")
+        if not facts.get("pyyaml"):
+            missing.append("PyYAML (python3-yaml)")
+        facts["can_run"] = not missing
+        facts["missing"] = missing
+        facts["steam"] = facts.get("steam_service") == "active"
+        return {"ok": True, "facts": facts}
 
     # -- deploy --------------------------------------------------------------------
     def deploy(self) -> None:
@@ -138,7 +186,8 @@ class Remote:
                  input=matrix.read_bytes())
         logf = f"state/runs/{unit}.log"
         inner = " ".join(shlex.quote(a) for a in
-                         ["./bench", "run", rmatrix, "--tag", tag, "--matrix-label", str(matrix.name), *extra])
+                         ["./bench", "run", rmatrix, "--tag", tag, "--matrix-label", str(matrix.name),
+                          "--device-label", self.device, *extra])
         script = f"{inner} > {logf} 2>&1; echo $? > {logf}.rc"
         self.ssh(f"systemd-run --user --quiet --unit={unit} --working-directory=\"$HOME/{self.rdir}\" "
                  f"/bin/bash -c {shlex.quote(script)}")

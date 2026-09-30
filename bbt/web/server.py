@@ -60,25 +60,24 @@ class Jobs:
         metas = [read_json(p) for p in sorted(self.dir.glob("*.json"))[-n:]]
         return list(reversed(metas))
 
-    def current(self) -> dict | None:
+    def running(self) -> list[dict]:
+        with self.lock:
+            return [m for jid, p in self.procs.items() if p.poll() is None and (m := self.meta(jid))]
+
+    def start(self, kind: str, args: list[str], label: str, device: str | None = None) -> dict:
         with self.lock:
             for jid, p in self.procs.items():
-                if p.poll() is None:
-                    return self.meta(jid)
-        return None
-
-    def start(self, kind: str, args: list[str], label: str) -> dict:
-        with self.lock:
-            if any(p.poll() is None for p in self.procs.values()):
-                raise RuntimeError("another job is running; wait for it or stop it first")
-            jid = time.strftime("%Y%m%d-%H%M%S") + f"-{kind}"
+                if p.poll() is None and (self.meta(jid) or {}).get("device") == device:
+                    raise RuntimeError(f"{device or 'this device'} is busy with another job; wait for it or stop it first")
+            jid = time.strftime("%Y%m%d-%H%M%S") + f"-{kind}" + (f"-{device}" if device else "")
             logf = self.dir / f"{jid}.log"
-            meta = {"id": jid, "kind": kind, "label": label, "args": args, "started": util.now_iso(),
-                    "ended": None, "rc": None, "state": "running"}
+            meta = {"id": jid, "kind": kind, "label": label, "device": device, "args": args,
+                    "started": util.now_iso(), "ended": None, "rc": None, "state": "running"}
             util.write_json(self._meta_path(jid), meta)
             out = open(logf, "wb")
             env = dict(os.environ, PYTHONUNBUFFERED="1")
-            p = subprocess.Popen([sys.executable, str(self.root / "bench"), *args], cwd=self.root,
+            full = (["--device", device] if device else []) + args
+            p = subprocess.Popen([sys.executable, str(self.root / "bench"), *full], cwd=self.root,
                                  stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                  env=env, start_new_session=True)
             out.close()
@@ -107,15 +106,39 @@ class Jobs:
 
 class App:
     def __init__(self, token: str):
-        from .. import remote
+        from .. import devices, remote
+        self.devices_mod, self.remote_mod = devices, remote
         self.root = remote.ROOT
-        self.conf = remote.load_conf()
-        self.remote = remote.Remote(self.conf) if self.conf else None
-        if self.conf:
-            util.RESULTS = remote.local_results(self.conf)
+        data = devices.load()
+        if data.get("results"):
+            util.RESULTS = remote.local_results({"results": data["results"]})
+        elif data["devices"]:
+            util.RESULTS = remote.local_results({})
         self.token = token
         self.work = self.root / ".bbt-web"
         self.jobs = Jobs(self.root, self.work)
+
+    @property
+    def remote_mode(self) -> bool:
+        return bool(self.devices_mod.load()["devices"])
+
+    def device(self, dev_id: str | None) -> dict:
+        d = self.devices_mod.get(dev_id)
+        if not d:
+            raise LookupError(f"no device {dev_id or '(default)'}")
+        return d
+
+    def remote_for(self, dev_id: str | None):
+        return self.remote_mod.Remote(self.devices_mod.conf(self.device(dev_id)))
+
+    def device_list(self) -> dict:
+        data = self.devices_mod.load()
+        busy = {m.get("device") for m in self.jobs.running()}
+        return {"default": data.get("default"),
+                "devices": [{"id": d["id"], "name": d["name"], "user": d["user"], "host": d["host"],
+                             "port": d.get("port", 22), "remote_dir": d.get("remote_dir", "bench"),
+                             "notes": d.get("notes", ""), "custom_ssh": bool(d.get("ssh_opts")),
+                             "busy": d["id"] in busy} for d in data["devices"]]}
 
     # -- helpers ---------------------------------------------------------------------
     def bench(self, *args, timeout=120) -> subprocess.CompletedProcess:
@@ -136,9 +159,10 @@ class App:
 
     # -- data ------------------------------------------------------------------------
     def info(self):
-        return {"mode": "remote" if self.conf else "local",
-                "target": self.conf.get("target") if self.conf else platform.node(),
-                "results": str(util.RESULTS), "job": self.jobs.current()}
+        dl = self.device_list()
+        return {"mode": "remote" if dl["devices"] else "local", "host": platform.node(),
+                "default_device": dl["default"], "devices": dl["devices"],
+                "results": str(util.RESULTS), "jobs": self.jobs.running()}
 
     def sessions(self):
         out = []
@@ -164,7 +188,13 @@ class App:
                              "runs": len([x for x in r["runs"] if not x["warmup"]]),
                              "primary_metric": pm, "mean": agg.get("mean"), "cv_pct": agg.get("cv_pct"),
                              "flags": len(r.get("flags", []))})
+            model = None
+            try:
+                model = read_json(d / "session.json")["snapshot"]["system"].get("model")
+            except (OSError, ValueError, KeyError):
+                pass
             out.append({"name": d.name, "tag": s["tag"], "started": s["started"], "ended": s.get("ended"),
+                        "device": s.get("device"), "model": model,
                         "power_source": power, "scenarios": scen,
                         "reports": sorted(p.name for p in d.glob("bbt_*.md"))})
         return out
@@ -387,7 +417,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if method == "POST" and len(parts) == 3 and parts[2] == "check":
                 if not MATRIX_NAME.match(parts[1]) or not (md / parts[1]).exists():
                     raise LookupError("no such matrix")
-                r = app.bench("run", str(md / parts[1]), "--tag", "check", "--dry-run", timeout=90)
+                dev = self._body().get("device")
+                pre = ["--device", app.device(dev)["id"]] if (dev and app.remote_mode) else []
+                r = app.bench(*pre, "run", str(md / parts[1]), "--tag", "check", "--dry-run", timeout=90)
                 txt = r.stdout.strip()
                 start = txt.find("{")
                 if r.returncode != 0 or start < 0:
@@ -398,7 +430,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": txt[-2000:]})
         if parts[:1] == ["jobs"]:
             if method == "GET" and len(parts) == 1:
-                return self._json({"current": app.jobs.current(), "recent": app.jobs.list()})
+                return self._json({"running": app.jobs.running(), "recent": app.jobs.list()})
             if method == "POST" and len(parts) == 1:
                 return self._json(self._start_job(self._body()))
             if len(parts) >= 2:
@@ -412,25 +444,67 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if method == "POST" and parts[2:] == ["cancel"]:
                     app.jobs.cancel(parts[1])
                     return self._json({"cancelled": parts[1]})
-        if parts[:1] == ["device"]:
-            if method == "GET" and parts[1:] == ["status"]:
-                if not app.remote:
-                    return self._json({"mode": "local", "running": [], "unpulled": []})
-                return self._json({"mode": "remote", "target": app.conf["target"],
-                                   "running": app.remote.running_units(),
-                                   "unpulled": app.remote.remote_sessions()})
-            if method == "GET" and parts[1:] == ["snapshot"]:
+        if parts[:1] == ["devices"]:
+            dm = app.devices_mod
+            if method == "GET" and len(parts) == 1:
+                return self._json(app.device_list())
+            if method == "POST" and len(parts) == 1:
+                b = self._body()
+                try:
+                    d = dm.add(b, allow_ssh_opts=False)
+                except dm.DeviceError as e:
+                    raise ValueError(str(e))
+                return self._json({"device": d["id"], "probe": app.remote_for(d["id"]).probe()})
+            if len(parts) >= 2:
+                dev = app.device(parts[1])
+                if method == "PUT" and len(parts) == 2:
+                    b = dict(self._body(), id=dev["id"])
+                    try:
+                        dm.add(b, allow_ssh_opts=False, replace=True)
+                    except dm.DeviceError as e:
+                        raise ValueError(str(e))
+                    return self._json({"saved": dev["id"]})
+                if method == "DELETE" and len(parts) == 2:
+                    if any(m.get("device") == dev["id"] for m in app.jobs.running()):
+                        raise RuntimeError("that device has a job running")
+                    dm.remove(dev["id"])
+                    return self._json({"removed": dev["id"]})
+                if method == "POST" and parts[2:] == ["default"]:
+                    dm.set_default(dev["id"])
+                    return self._json({"default": dev["id"]})
+                if method == "POST" and parts[2:] == ["probe"]:
+                    return self._json(app.remote_for(dev["id"]).probe())
+                if method == "GET" and parts[2:] == ["status"]:
+                    r = app.remote_for(dev["id"])
+                    probe = r.probe()
+                    if not probe["ok"]:
+                        return self._json({"device": dev["id"], "online": False, "probe": probe})
+                    return self._json({"device": dev["id"], "online": True, "probe": probe,
+                                       "running": r.running_units(), "unpulled": r.remote_sessions()})
+                if method == "GET" and parts[2:] == ["snapshot"]:
+                    r = app.bench("--device", dev["id"], "snapshot", timeout=90)
+                    if r.returncode != 0:
+                        raise RuntimeError((r.stderr or r.stdout).strip()[-500:] or "snapshot failed")
+                    return self._json(json.loads(r.stdout[r.stdout.find("{"):]))
+                if method == "GET" and parts[2:] == ["sample"]:
+                    return self._stream_sample(float(q.get("seconds", 300)), dev["id"])
+        if parts[:1] == ["local"] and method == "GET":   # web app running on the device itself
+            if parts[1:] == ["snapshot"]:
                 r = app.bench("snapshot", timeout=90)
-                if r.returncode != 0:
-                    raise RuntimeError((r.stderr or r.stdout).strip()[-500:] or "snapshot failed")
                 return self._json(json.loads(r.stdout[r.stdout.find("{"):]))
-            if method == "GET" and parts[1:] == ["sample"]:
-                return self._stream_sample(float(q.get("seconds", 300)))
+            if parts[1:] == ["sample"]:
+                return self._stream_sample(float(q.get("seconds", 300)), None)
         return self._err(404, "no such endpoint")
 
     def _start_job(self, b: dict) -> dict:
         kind = b.get("kind")
         app = self.app
+        dev = None
+        if app.remote_mode:
+            dev = app.device(b.get("device"))["id"]
+        elif kind in ("attach", "stop", "pull", "deploy"):
+            raise ValueError(f"{kind} needs a registered device")
+        where = f" on {dev}" if dev else ""
         if kind == "run":
             name = b.get("matrix", "")
             tag = (b.get("tag") or "").strip()
@@ -448,16 +522,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             only = [s for s in (b.get("only") or []) if isinstance(s, str) and re.match(r"^[\w.-]+$", s)]
             if only:
                 args += ["--only", *only]
-            return app.jobs.start("run", args, f"run {name} as '{tag}'")
-        simple = {"attach": (["attach"], "attach to the device run"),
+            return app.jobs.start("run", args, f"run {name} as '{tag}'{where}", dev)
+        simple = {"attach": (["attach"], "follow the device run"),
                   "stop": (["stop"], "stop the device run"),
-                  "pull": (["pull"], "pull finished sessions"),
-                  "deploy": (["deploy"], "deploy the harness"),
-                  "setup": (["setup"], "install vkmark on the device")}
+                  "pull": (["pull"], "fetch finished sessions"),
+                  "deploy": (["deploy"], "update the harness"),
+                  "setup": (["setup"], "install vkmark")}
         if kind in simple:
-            if not app.remote and kind in ("attach", "stop", "pull", "deploy"):
-                raise ValueError(f"{kind} needs remote mode")
-            return app.jobs.start(kind, *simple[kind])
+            args, label = simple[kind]
+            return app.jobs.start(kind, args, label + where, dev)
         raise ValueError("unknown job kind")
 
     def _sse_start(self):
@@ -503,9 +576,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
-    def _stream_sample(self, seconds: float):
+    def _stream_sample(self, seconds: float, device: str | None):
         seconds = max(5.0, min(seconds, 3600.0))
-        p = subprocess.Popen([sys.executable, str(self.app.root / "bench"), "sample", str(seconds), "--json"],
+        pre = ["--device", device] if device else []
+        p = subprocess.Popen([sys.executable, str(self.app.root / "bench"), *pre, "sample", str(seconds), "--json"],
                              cwd=self.app.root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL, env=dict(os.environ, PYTHONUNBUFFERED="1"),
                              start_new_session=True)

@@ -108,6 +108,11 @@
   };
   const UNITS = { ft_p50_ms: "ms", ft_p99_ms: "ms", ft_p999_ms: "ms", system_w_avg: "W", cpu_temp_max_c: "°C",
     gpu_temp_max_c: "°C", gpu_mhz_avg: "MHz", gpu_busy_avg: "%", mj_per_frame: "mJ", cpu_load_avg: "%" };
+  function devName(id) {
+    const d = info && info.devices ? info.devices.find(x => x.id === id) : null;
+    return d ? d.name : id;
+  }
+  function sessionDevice(s) { return s.device ? devName(s.device) : (s.model || "-"); }
   const POWER = { battery: "Battery", "ac-estimate": "Charger (estimated draw)", "ac-unknown": "Charger (draw unknown)" };
   function powerText(p) { return POWER[p] || (p ? p : "-"); }
 
@@ -137,13 +142,17 @@
       info = await api("info");
       const m = document.getElementById("mode");
       m.textContent = "";
-      m.append(info.mode === "remote" ? "Device " : "On device ", h("b", null, info.target));
-      const j = info.job;
+      if (info.mode === "remote") {
+        const def = info.devices.find(d => d.id === info.default_device);
+        m.append(`${info.devices.length} device${info.devices.length === 1 ? "" : "s"} · default `, h("b", null, def ? def.name : "-"));
+      } else m.append("On device ", h("b", null, info.host));
       jobbar.textContent = "";
-      if (j) {
+      if (info.jobs.length) {
         jobbar.classList.remove("hidden");
-        jobbar.append(h("span", { class: "pulse", "aria-hidden": "true" }), h("span", null, "Running: ", h("b", null, j.label)),
-          h("a", { href: `#/job/${enc(j.id)}` }, "Show output"));
+        jobbar.append(h("span", { class: "pulse", "aria-hidden": "true" }));
+        info.jobs.forEach(j => jobbar.append(h("span", null, h("b", null, j.label), " ",
+          h("a", { href: `#/job/${enc(j.id)}` }, "output"))));
+        if (info.jobs.length > 1) jobbar.append(h("a", { href: "#/jobs" }, "all jobs"));
       } else jobbar.classList.add("hidden");
     } catch (e) { /* keep last state */ }
   }
@@ -157,7 +166,10 @@
     [/^\/compare$/, pageCompare, "compare"],
     [/^\/run$/, pageNewRun, "run"],
     [/^\/job\/([^/]+)$/, pageJob, "run"],
-    [/^\/device$/, pageDevice, "device"],
+    [/^\/devices$/, pageDevices, "devices"],
+    [/^\/devices\/([^/]+)$/, pageDevice, "devices"],
+    [/^\/device$/, () => { location.hash = "#/devices"; }, "devices"],
+    [/^\/jobs$/, pageJobs, "run"],
     [/^\/matrices$/, pageMatrices, "matrices"],
   ];
   let cleanup = [];
@@ -189,11 +201,15 @@
     let list;
     try { list = await api("sessions"); } catch (e) { return failed(e); }
     const picked = new Set();
+    const devIds = [...new Set(list.map(s => s.device || s.model || "-"))];
+    let filter = "";
+    try { filter = sessionStorage.getItem("bbt-dev-filter") || ""; } catch (e) { /* ignore */ }
+    if (filter && !devIds.includes(filter)) filter = "";
     const cmp = h("button", { class: "primary", disabled: true, onclick: () => {
       const [b, a] = [...picked]; // list is newest first: older one is A
       location.hash = `#/compare?a=${enc(a)}&b=${enc(b)}`;
     } }, "Compare selected");
-    const hint = h("span", { class: "muted small" }, "Tick two sessions to compare them.");
+    const hint = h("span", { class: "muted small" }, "Tick two sessions (any devices) to compare them.");
     const rows = list.map(s => {
       const box = h("input", { type: "checkbox", "aria-label": `Select ${s.tag}`, onclick: e => e.stopPropagation(),
         onchange: e => {
@@ -212,19 +228,28 @@
         onkeydown: e => { if (e.key === "Enter") location.hash = `#/s/${enc(s.name)}`; } },
         h("td", null, box),
         h("td", null, h("div", null, h("b", null, s.tag)), h("div", { class: "muted small" }, when(s.started))),
+        h("td", { class: "small" }, sessionDevice(s)),
         h("td", null, chips),
         h("td", { class: "small" }, powerText(s.power_source)),
         h("td", { class: "small r" }, `${s.scenarios.reduce((n, x) => n + x.runs_ok, 0)} runs`));
+      tr.dataset.dev = s.device || s.model || "-";
       return tr;
     });
+    const devSel = h("select", { "aria-label": "Device filter", onchange: e => {
+      filter = e.target.value;
+      try { sessionStorage.setItem("bbt-dev-filter", filter); } catch (err) { /* ignore */ }
+      applyFilter();
+    } }, h("option", { value: "" }, "All devices"), devIds.map(d => h("option", { value: d, selected: d === filter }, devName(d))));
+    function applyFilter() { rows.forEach(tr => tr.classList.toggle("hidden", !!filter && tr.dataset.dev !== filter)); }
+    applyFilter();
     const t = h("div", { class: "tablewrap" }, h("table", null,
-      h("thead", null, h("tr", null, h("th", null, h("span", { class: "hidden" }, "Select")), h("th", null, "Session"),
+      h("thead", null, h("tr", null, h("th", null, h("span", { class: "hidden" }, "Select")), h("th", null, "Session"), h("th", null, "Device"),
         h("th", null, "Results (mean of measured runs, flags)"), h("th", null, "Power"), h("th", { class: "r" }, "Measured"))),
       h("tbody", null, rows)));
     setPage("Sessions",
       h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Sessions"),
         h("p", { class: "muted" }, `${list.length} saved in ${info ? info.results : "results"}`)),
-        h("div", { class: "btnrow" }, hint, cmp, h("a", { class: "btn", href: "#/run" }, "New run"))),
+        h("div", { class: "btnrow" }, devIds.length > 1 ? devSel : null, hint, cmp, h("a", { class: "btn", href: "#/run" }, "New run"))),
       list.length ? card(t) : card(h("p", null, "No sessions yet. "), h("a", { href: "#/run" }, "Start a run")));
   }
 
@@ -256,7 +281,8 @@
       h("div", { class: "pagehead" },
         h("div", { class: "grow" }, h("div", { class: "small" }, h("a", { href: "#/" }, "Sessions"), " / "),
           h("h1", null, s.tag),
-          h("p", { class: "muted" }, `${when(s.started)} · ${duration(s.started, s.ended)} · ${name}` + (meta.interrupted ? " · interrupted" : ""))),
+          h("p", { class: "muted" }, `${sessionDevice({ device: s.device, model: ((meta.snapshot || {}).system || {}).model })} · ` +
+            `${when(s.started)} · ${duration(s.started, s.ended)} · ${name}` + (meta.interrupted ? " · interrupted" : ""))),
         files),
       tabs, body);
     views.Results();
@@ -444,7 +470,7 @@
     loading("sessions");
     let list;
     try { list = await api("sessions"); } catch (e) { return failed(e); }
-    const opt = (sel) => list.map(s => h("option", { value: s.name, selected: s.name === sel }, `${s.tag} · ${when(s.started)}`));
+    const opt = (sel) => list.map(s => h("option", { value: s.name, selected: s.name === sel }, `${s.tag} · ${sessionDevice(s)} · ${when(s.started)}`));
     const a = h("select", { "aria-label": "Session A" }, opt(q.get("a") || (list[1] || {}).name));
     const b = h("select", { "aria-label": "Session B" }, opt(q.get("b") || (list[0] || {}).name));
     const out = h("div");
@@ -469,7 +495,7 @@
       const flags = sc.flags_a.map(f => "A: " + f).concat(sc.flags_b.map(f => "B: " + f));
       out.appendChild(card(h("div", { class: "cardhead" }, h("h2", { class: "grow" }, sc.title), h("span", { class: "muted small" }, sc.name)),
         sc.tool_a !== sc.tool_b ? banner(`Proton differs: A ${sc.tool_a}, B ${sc.tool_b}`) : null,
-        table(["Metric", `A · ${d.a.tag}`, `B · ${d.b.tag}`, "Change", "", "Noise", "Runs"], rows, { align: ["", "r", "r", "r", "", "r", "r"] }),
+        table(["Metric", `A · ${d.a.tag} (${devName(d.a.device)})`, `B · ${d.b.tag} (${devName(d.b.device)})`, "Change", "", "Noise", "Runs"], rows, { align: ["", "r", "r", "r", "", "r", "r"] }),
         flags.length ? h("ul", { class: "flags", style: null }, flags.map(f => h("li", null, icon("warn", "var(--warning)"), h("span", { class: "small" }, f)))) : null));
     });
     out.appendChild(card(h("h2", null, "System settings that differ"),
@@ -482,23 +508,35 @@
     loading("matrices");
     let mats, jobs;
     try { [mats, jobs] = await Promise.all([api("matrices"), api("jobs")]); } catch (e) { return failed(e); }
+    const remote = info && info.mode === "remote";
+    const devs = remote ? info.devices : [];
     const matrix = h("select", { id: "matrix" }, mats.map(m => h("option", { value: m, selected: m === "first-light.yaml" }, m)));
     const tag = h("input", { type: "text", id: "tag", placeholder: "e.g. baseline, gpu-cap-550", maxlength: 60, required: true, autocomplete: "off" });
     const runs = h("input", { type: "number", min: 1, max: 50, placeholder: "from matrix" });
     const warm = h("input", { type: "number", min: 0, max: 10, placeholder: "from matrix" });
+    const devBox = h("div", { class: "checks" }, devs.map(d => h("label", null,
+      h("input", { type: "checkbox", name: "dev", value: d.id, checked: d.id === info.default_device, disabled: d.busy }),
+      h("span", null, h("b", null, d.name), h("span", { class: "muted" }, ` · ${d.user}@${d.host}${d.busy ? " · busy" : ""}`)))));
     const scen = h("div", { class: "checks" }, h("span", { class: "muted small" }, "Check the matrix to list its scenarios."));
     const msg = h("div");
     const start = h("button", { class: "primary", type: "submit" }, "Start run");
+    const pickedDevs = () => [...devBox.querySelectorAll("input:checked")].map(x => x.value);
     async function check() {
       scen.textContent = "";
-      scen.appendChild(h("span", { class: "muted small" }, "Checking on the device..."));
+      const dev = pickedDevs()[0] || info.default_device;
+      scen.appendChild(h("span", { class: "muted small" }, remote ? `Checking on ${devName(dev)}...` : "Checking..."));
       try {
-        const r = await api(`matrices/${enc(matrix.value)}/check`, { method: "POST", body: {} });
+        const r = await api(`matrices/${enc(matrix.value)}/check`, { method: "POST", body: { device: dev } });
         scen.textContent = "";
-        if (!r.ok) { scen.appendChild(banner(r.error, "error")); return; }
+        if (!r.ok) {
+          const offline = /ssh .* failed \(255\)|Host is down|No route|timed out|Connection refused/i.test(r.error);
+          scen.appendChild(banner(offline ? `Could not reach ${devName(dev)} to check the matrix: ${r.error.replace(/^.*?: /, "")}. ` +
+            "Pick another device or check it under Devices." : r.error, "error"));
+          return;
+        }
         const sess = r.matrix.session;
         scen.appendChild(h("p", { class: "small muted" }, `${sess.runs} measured + ${sess.warmup} warm-up per scenario, cooldown to baseline +${sess.cooldown.tolerance_c} °C`));
-        r.matrix.scenarios.forEach(s => scen.appendChild(h("label", null, h("input", { type: "checkbox", value: s.name, checked: true }),
+        r.matrix.scenarios.forEach(s => scen.appendChild(h("label", null, h("input", { type: "checkbox", name: "scen", value: s.name, checked: true }),
           h("span", null, h("b", null, s.name), h("span", { class: "muted" }, ` · ${s.title} · ${s.kind}${s.proton ? " · " + s.proton : ""}`)))));
       } catch (e) { scen.textContent = ""; scen.appendChild(banner(e.message, "error")); }
     }
@@ -506,49 +544,73 @@
     const form = h("form", { onsubmit: async e => {
       e.preventDefault();
       msg.textContent = "";
-      const boxes = [...scen.querySelectorAll("input[type=checkbox]")];
-      const only = boxes.length && boxes.some(b => !b.checked) ? boxes.filter(b => b.checked).map(b => b.value) : [];
-      if (boxes.length && !only.length && boxes.every(b => !b.checked)) { msg.appendChild(banner("Pick at least one scenario.", "error")); return; }
+      const boxes = [...scen.querySelectorAll("input[name=scen]")];
+      if (boxes.length && boxes.every(b => !b.checked)) { msg.appendChild(banner("Pick at least one scenario.", "error")); return; }
+      const only = boxes.some(b => !b.checked) ? boxes.filter(b => b.checked).map(b => b.value) : [];
+      const targets = remote ? pickedDevs() : [null];
+      if (!targets.length) { msg.appendChild(banner("Pick at least one device.", "error")); return; }
       start.disabled = true;
-      try {
-        const j = await api("jobs", { method: "POST", body: { kind: "run", matrix: matrix.value, tag: tag.value.trim(),
-          runs: runs.value, warmup: warm.value, only } });
-        refreshInfo();
-        location.hash = `#/job/${enc(j.id)}`;
-      } catch (err) { msg.appendChild(banner(err.message, "error")); start.disabled = false; }
+      const started = [];
+      for (const dev of targets) {
+        try {
+          started.push(await api("jobs", { method: "POST", body: { kind: "run", matrix: matrix.value, tag: tag.value.trim(),
+            runs: runs.value, warmup: warm.value, only, device: dev } }));
+        } catch (err) { msg.appendChild(banner(`${dev ? devName(dev) + ": " : ""}${err.message}`, "error")); }
+      }
+      refreshInfo();
+      if (started.length === 1 && started.length === targets.length) location.hash = `#/job/${enc(started[0].id)}`;
+      else if (started.length) location.hash = "#/jobs";
+      else start.disabled = false;
     } },
       h("div", { class: "form" },
         h("label", { class: "field", for: "matrix" }, "Matrix", matrix),
         h("label", { class: "field", for: "tag" }, "Tag (what is being tested)", tag),
         h("label", { class: "field" }, "Measured runs (optional)", runs),
         h("label", { class: "field" }, "Warm-up runs (optional)", warm)),
-      h("h3", { style: null }, "Scenarios"), scen, msg,
+      remote ? h("h3", null, "Devices") : null,
+      remote ? h("p", { class: "small muted" }, "Tick several to run the same matrix on each at the same time (A/B between devices). " +
+        "Each device writes its own session with the same tag.") : null,
+      remote ? devBox : null,
+      h("h3", null, "Scenarios"), scen, msg,
       h("div", { class: "btnrow" }, start, h("button", { type: "button", onclick: check }, "Check matrix"),
-        h("a", { class: "btn", href: "#/matrices" }, "Edit matrices")));
-    const recent = jobs.recent.slice(0, 8).map(j => ({ attrs: { class: "link", onclick: () => { location.hash = `#/job/${enc(j.id)}`; } },
-      cells: [h("a", { href: `#/job/${enc(j.id)}` }, j.label), when(j.started),
-        j.state === "running" ? status("warn", "running") : j.state === "done" ? status("good", "done") : status("bad", j.state)] }));
+        h("a", { class: "btn", href: "#/matrices" }, "Edit matrices"), remote ? h("a", { class: "btn", href: "#/devices" }, "Manage devices") : null));
     setPage("New run",
       h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "New run"),
-        h("p", { class: "muted" }, info && info.mode === "remote"
-          ? `Runs on ${info.target}; the results come back to this computer when it finishes. Closing the browser does not stop it.`
+        h("p", { class: "muted" }, remote
+          ? "Runs on the devices you pick; results come back to this computer when each one finishes. Closing the browser does not stop them."
           : "Runs on this device."))),
-      jobs.current ? banner(h("span", null, "A job is running: ", h("a", { href: `#/job/${enc(jobs.current.id)}` }, jobs.current.label))) : null,
-      card(form),
-      recent.length ? card(h("h2", null, "Recent jobs"), table(["Job", "Started", "State"], recent)) : null);
+      jobs.running.length ? banner(h("span", null, "Running now: ", jobs.running.map((j, i) =>
+        h("span", null, i ? ", " : "", h("a", { href: `#/job/${enc(j.id)}` }, j.label))))) : null,
+      remote && !devs.length ? banner(h("span", null, "No devices yet. ", h("a", { href: "#/devices" }, "Add one")), "error") : null,
+      card(form));
     if (mats.length) check();
+  }
+
+  // ---------------------------------------------------------------- jobs
+  async function pageJobs() {
+    loading("jobs");
+    let jobs;
+    try { jobs = await api("jobs"); } catch (e) { return failed(e); }
+    const rows = jobs.recent.map(j => ({ attrs: { class: "link", onclick: () => { location.hash = `#/job/${enc(j.id)}`; } },
+      cells: [h("a", { href: `#/job/${enc(j.id)}` }, j.label), j.device ? devName(j.device) : "-", when(j.started),
+        j.state === "running" ? status("warn", "running") : j.state === "done" ? status("good", "done")
+          : j.state === "interrupted" ? status("neutral", "detached") : status("bad", j.state)] }));
+    setPage("Jobs", h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Jobs"),
+      h("p", { class: "muted" }, "Runs, fetches and updates started from this app."))),
+      card(rows.length ? table(["Job", "Device", "Started", "State"], rows) : h("p", null, "No jobs yet.")));
+    if (jobs.running.length) { const t = setTimeout(route, 5000); onLeave(() => clearTimeout(t)); }
   }
 
   // ---------------------------------------------------------------- job output
   function pageJob(id) {
     const con = h("pre", { class: "console", "aria-live": "off", tabindex: 0 });
     const state = h("div", { class: "btnrow" });
+    const remote = info && info.mode === "remote";
     const cancel = h("button", { onclick: async () => {
-      const remote = info && info.mode === "remote";
-      if (!confirm(remote ? "Detach from this run? It keeps running on the device; use Device > Stop to end it."
+      if (!confirm(remote ? "Detach from this run? It keeps running on the device; use Devices > Stop to end it."
         : "Interrupt this run? It stops after writing what was measured.")) return;
       try { await api(`jobs/${enc(id)}/cancel`, { method: "POST", body: {} }); } catch (e) { alert(e.message); }
-    } }, info && info.mode === "remote" ? "Detach" : "Interrupt");
+    } }, remote ? "Detach" : "Interrupt");
     const links = h("div", { class: "btnrow" });
     setPage("Job", h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Job output"),
       h("p", { class: "muted mono small" }, id)), state), card(con), links);
@@ -578,46 +640,158 @@
     es.onerror = () => { /* EventSource reconnects by itself */ };
   }
 
-  // ---------------------------------------------------------------- device
-  async function pageDevice() {
-    const statusBox = h("div", null, h("p", { class: "muted" }, "Checking..."));
+  // ---------------------------------------------------------------- devices
+  const PROBLEM = {
+    auth: "The device does not accept this computer's SSH key. On this computer run: ssh-copy-id ",
+    hostkey: "The device's SSH host key changed since the last connection (reinstalled, or a different device at that address). " +
+      "Check it, then remove the old key from ~/.ssh/known_hosts.",
+    unreachable: "No connection. Check the address, that the device is on and awake, and that both are on the same network or tailnet.",
+  };
+  function probeView(p, dev) {
+    if (!p.ok) {
+      const hint = PROBLEM[p.problem] + (p.problem === "auth" ? `${dev.user}@${dev.host}` : "");
+      return h("div", null, h("p", null, status("bad", { auth: "Key not accepted", hostkey: "Host key changed", unreachable: "Unreachable" }[p.problem])),
+        h("p", { class: "small" }, hint), h("pre", { class: "console small" }, p.detail || ""));
+    }
+    const f = p.facts;
+    const rows = [["Model", f.model], ["OS", f.os], ["Kernel", `${f.kernel} (${f.arch})`], ["User", f.user],
+      ["Python", `${f.python}${f.pyyaml ? ", PyYAML " + f.pyyaml : ", no PyYAML"}`],
+      ["Steam (Gaming Mode)", f.steam ? "running" : (f.steam_service || "not found")],
+      ["Harness", f.harness ? "installed" : "not yet (installed on the first run)"], ["vkmark", f.vkmark ? "installed" : "not installed"]]
+      .map(([k, v]) => ({ cells: [k, v || "-"] }));
+    return h("div", null,
+      h("p", null, f.can_run ? status("good", "Ready to run") : status("bad", `Missing: ${f.missing.join(", ")}`)),
+      !f.steam ? h("p", { class: "small muted" }, "Steam scenarios need Steam running in Gaming Mode as this user; vkmark scenarios work without it.") : null,
+      table(["", ""], rows));
+  }
+
+  function deviceForm(dev, onDone) {
+    const f = {
+      id: h("input", { type: "text", value: dev ? dev.id : "", placeholder: "e.g. thor, pbos-1", maxlength: 32, disabled: !!dev, autocomplete: "off" }),
+      name: h("input", { type: "text", value: dev ? dev.name : "", placeholder: "e.g. AYN Thor", maxlength: 60 }),
+      host: h("input", { type: "text", value: dev ? dev.host : "", placeholder: "IP address or host name", autocomplete: "off", spellcheck: "false" }),
+      user: h("input", { type: "text", value: dev ? dev.user : "steamos", maxlength: 32, spellcheck: "false" }),
+      port: h("input", { type: "number", value: dev ? dev.port : 22, min: 1, max: 65535 }),
+      remote_dir: h("input", { type: "text", value: dev ? dev.remote_dir : "bench", spellcheck: "false" }),
+    };
+    const msg = h("div");
+    const out = h("div");
+    const save = h("button", { class: "primary", type: "submit" }, dev ? "Save" : "Add and test");
+    const form = h("form", { onsubmit: async e => {
+      e.preventDefault();
+      msg.textContent = ""; out.textContent = "";
+      const body = { id: f.id.value.trim(), name: f.name.value.trim(), host: f.host.value.trim(), user: f.user.value.trim(),
+        port: f.port.value, remote_dir: f.remote_dir.value.trim() };
+      save.disabled = true;
+      try {
+        if (dev) { await api(`devices/${enc(dev.id)}`, { method: "PUT", body }); msg.appendChild(banner("Saved.")); }
+        else {
+          msg.appendChild(banner("Added. Testing the connection..."));
+          const r = await api("devices", { method: "POST", body });
+          msg.textContent = "";
+          out.appendChild(probeView(r.probe, body));
+        }
+        await refreshInfo();
+        if (onDone) onDone();
+      } catch (err) { msg.textContent = ""; msg.appendChild(banner(err.message, "error")); }
+      save.disabled = false;
+    } },
+      h("div", { class: "form" },
+        h("label", { class: "field" }, "Short id (used in session names)", f.id),
+        h("label", { class: "field" }, "Name", f.name),
+        h("label", { class: "field" }, "Address", f.host),
+        h("label", { class: "field" }, "SSH user (the one running Steam)", f.user),
+        h("label", { class: "field" }, "SSH port", f.port),
+        h("label", { class: "field" }, "Harness folder (under ~)", f.remote_dir)),
+      h("p", { class: "small muted" }, "This computer logs in with its SSH key (no passwords). If the device does not know the key yet, run ssh-copy-id USER@ADDRESS once. " +
+        "A new device's host key is trusted on first contact; a changed key is refused."),
+      msg, h("div", { class: "btnrow" }, save), out);
+    return form;
+  }
+
+  async function pageDevices() {
+    loading("devices");
+    let dl;
+    try { dl = await api("devices"); } catch (e) { return failed(e); }
+    const list = h("div", { class: "grid2" });
+    dl.devices.forEach(d => {
+      const out = h("div");
+      const test = h("button", { onclick: async () => {
+        out.textContent = ""; out.appendChild(h("p", { class: "muted small" }, "Connecting..."));
+        try { const p = await api(`devices/${enc(d.id)}/probe`, { method: "POST", body: {} }); out.textContent = ""; out.appendChild(probeView(p, d)); }
+        catch (e) { out.textContent = ""; out.appendChild(banner(e.message, "error")); }
+      } }, "Test connection");
+      const isDef = d.id === dl.default;
+      list.appendChild(card(
+        h("div", { class: "cardhead" }, h("h2", { class: "grow" }, h("a", { href: `#/devices/${enc(d.id)}` }, d.name)),
+          isDef ? h("span", { class: "chip" }, "default") : null, d.busy ? status("warn", "busy") : null),
+        h("p", { class: "small ink-2 mono" }, `${d.id} · ${d.user}@${d.host}${d.port !== 22 ? ":" + d.port : ""} · ~/${d.remote_dir}` +
+          (d.custom_ssh ? " · custom ssh options" : "")),
+        h("div", { class: "btnrow" }, h("a", { class: "btn", href: `#/devices/${enc(d.id)}` }, "Open"), test,
+          !isDef ? h("button", { onclick: async () => { try { await api(`devices/${enc(d.id)}/default`, { method: "POST", body: {} }); await refreshInfo(); route(); } catch (e) { alert(e.message); } } }, "Make default") : null,
+          h("button", { class: "danger", onclick: async () => {
+            if (!confirm(`Remove ${d.name} from this list? Its sessions stay; nothing on the device is touched.`)) return;
+            try { await api(`devices/${enc(d.id)}`, { method: "DELETE" }); await refreshInfo(); route(); } catch (e) { alert(e.message); }
+          } }, "Remove")),
+        out));
+    });
+    setPage("Devices",
+      h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Devices"),
+        h("p", { class: "muted" }, "The devices this computer can benchmark. Add one by IP address or host name (LAN or tailnet)."))),
+      dl.devices.length ? list : banner("No devices yet: add one below."),
+      card(h("h2", null, "Add a device"), deviceForm(null, () => setTimeout(route, 1500))));
+  }
+
+  async function pageDevice(id) {
+    let dl;
+    try { dl = await api("devices"); } catch (e) { return failed(e); }
+    const dev = dl.devices.find(d => d.id === id);
+    if (!dev) return setPage("Devices", banner(`No device ${id}.`, "error"));
+    const statusBox = h("div", null, h("p", { class: "muted" }, "Connecting..."));
     const actions = h("div", { class: "btnrow" });
-    const snapBox = h("div", null, h("p", { class: "muted small" }, "The current clocks, governors, scheduler, memory and power settings."));
+    const snapBox = h("div", null, h("p", { class: "muted small" }, "Clocks, governors, scheduler, memory and power settings right now."));
     const live = h("div");
     const liveBtn = h("button", null, "Start live sensors");
-    setPage("Device",
-      h("div", { class: "pagehead" }, h("div", { class: "grow" }, h("h1", null, "Device"),
-        h("p", { class: "muted" }, info ? info.target : ""))),
-      h("div", { class: "grid2" }, card(h("h2", null, "Runs on the device"), statusBox, actions),
+    const editCard = card(h("h2", null, "Edit device"), deviceForm(dev, () => setTimeout(route, 800)));
+    editCard.classList.add("hidden");
+    setPage(dev.name,
+      h("div", { class: "pagehead" }, h("div", { class: "grow" },
+        h("div", { class: "small" }, h("a", { href: "#/devices" }, "Devices"), " / "),
+        h("h1", null, dev.name),
+        h("p", { class: "muted mono small" }, `${dev.id} · ${dev.user}@${dev.host}${dev.port !== 22 ? ":" + dev.port : ""}`)),
+        h("div", { class: "btnrow" }, h("button", { onclick: () => editCard.classList.toggle("hidden") }, "Edit"),
+          h("a", { class: "btn", href: "#/run" }, "New run"))),
+      editCard,
+      h("div", { class: "grid2" }, card(h("h2", null, "Status"), statusBox, actions),
         card(h("div", { class: "cardhead" }, h("h2", { class: "grow" }, "Current settings"),
           h("button", { onclick: loadSnap }, "Read settings")), snapBox)),
       card(h("div", { class: "cardhead" }, h("h2", { class: "grow" }, "Live sensors"), liveBtn), live));
     const job = async (kind, ask) => {
       if (ask && !confirm(ask)) return;
-      try { const j = await api("jobs", { method: "POST", body: { kind } }); refreshInfo(); location.hash = `#/job/${enc(j.id)}`; }
+      try { const j = await api("jobs", { method: "POST", body: { kind, device: id } }); refreshInfo(); location.hash = `#/job/${enc(j.id)}`; }
       catch (e) { alert(e.message); }
     };
     try {
-      const s = await api("device/status");
+      const s = await api(`devices/${enc(id)}/status`);
       statusBox.textContent = "";
-      if (s.mode === "local") statusBox.appendChild(h("p", null, "The web app runs on the device itself; runs show up under Sessions."));
-      else {
+      statusBox.appendChild(probeView(s.probe, dev));
+      if (s.online) {
         statusBox.append(
-          h("p", null, s.running.length ? status("warn", `Running: ${s.running.join(", ")}`) : status("neutral", "Nothing running")),
-          h("p", null, s.unpulled.length ? `Finished, not copied here yet: ${s.unpulled.join(", ")}` : "Nothing waiting to be copied."));
+          h("p", null, s.running.length ? status("warn", `Running on the device: ${s.running.join(", ")}`) : status("neutral", "No run in progress")),
+          h("p", { class: "small" }, s.unpulled.length ? `Finished, not copied here yet: ${s.unpulled.join(", ")}` : "Nothing waiting to be copied."));
         if (s.running.length) actions.append(h("button", { class: "primary", onclick: () => job("attach") }, "Follow and fetch"),
-          h("button", { class: "danger", onclick: () => job("stop", "Stop the run on the device? It keeps what it measured so far.") }, "Stop run"));
+          h("button", { class: "danger", onclick: () => job("stop", `Stop the run on ${dev.name}? It keeps what it measured so far.`) }, "Stop run"));
         if (s.unpulled.length) actions.append(h("button", { class: "primary", onclick: () => job("pull") }, "Fetch results"));
-        actions.append(h("button", { onclick: () => job("deploy") }, "Update the harness on the device"));
+        actions.append(h("button", { onclick: () => job("deploy") }, "Install / update the harness"),
+          h("button", { onclick: () => job("setup") }, "Install vkmark"));
       }
-      actions.append(h("button", { onclick: () => job("setup") }, "Install vkmark"));
     } catch (e) { statusBox.textContent = ""; statusBox.appendChild(banner(e.message, "error")); }
 
     async function loadSnap() {
       snapBox.textContent = "";
       snapBox.appendChild(h("p", { class: "muted" }, "Reading..."));
       try {
-        const snap = await api("device/snapshot");
+        const snap = await api(`devices/${enc(id)}/snapshot`);
         snapBox.textContent = "";
         const rows = [];
         (snap.cpufreq || []).forEach(p => rows.push({ cells: [`CPU ${p.policy}`, `${p.governor}, ${p.min_mhz}-${p.max_mhz} MHz (hw ${p.hw_min_mhz}-${p.hw_max_mhz})`] }));
@@ -627,9 +801,9 @@
         rows.push({ cells: ["Power", `${powerText(snap.power.power_source)}, battery ${snap.power.battery_pct}%, ${num(snap.power.system_w, 1)} W`] });
         rows.push({ cells: ["Temps", Object.entries(snap.temps_c || {}).map(([k, v]) => `${k} ${v} °C`).join(", ")] });
         rows.push({ cells: ["Kernel", snap.system.kernel.release] });
-        rows.push({ cells: ["GPU driver", snap.system.gpu.driver_info] });
+        rows.push({ cells: ["GPU driver", snap.system.gpu.driver_info || "-"] });
         snapBox.appendChild(table(["Setting", "Value"], rows));
-      } catch (e) { snapBox.textContent = ""; snapBox.appendChild(banner(e.message, "error")); }
+      } catch (e) { snapBox.textContent = ""; snapBox.appendChild(banner(e.message.includes("bench") ? "Install the harness first (Status > Install / update)." : e.message, "error")); }
     }
 
     let es = null;
@@ -645,14 +819,14 @@
       live.textContent = "";
       live.append(tilesEl, grid, h("p", { class: "muted small" }, "Last 2 minutes, 1 s samples. Stops after 5 minutes or when you leave this page."));
       liveBtn.textContent = "Stop live sensors";
-      es = new EventSource("/api/device/sample?seconds=300");
+      es = new EventSource(`/api/devices/${enc(id)}/sample?seconds=300`);
       es.addEventListener("sample", e => {
         let r; try { r = JSON.parse(e.data); } catch (err) { return; }
         data.push(r);
         if (data.length > 120) data.shift();
         const pol = Object.keys(r).filter(k => /^policy\d+_mhz$/.test(k));
         tilesEl.textContent = "";
-        tilesEl.append(tile("CPU load", `${num(r.cpu_load, 0)}%`), tile("CPU clocks", pol.map(k => r[k]).join(" / "), "MHz, little / mid / prime"),
+        tilesEl.append(tile("CPU load", `${num(r.cpu_load, 0)}%`), tile("CPU clocks", pol.map(k => r[k]).join(" / "), "MHz per cluster"),
           tile("GPU clock", `${num(r.gpu_mhz, 0)} MHz`), tile("CPU / GPU", `${num(r.cpu_temp_c, 0)} / ${num(r.gpu_temp_c, 0)} °C`),
           tile("Power", `${num(r.system_w, 1)} W`, powerText(r.power_source)), tile("Battery", `${r.battery_pct}%`, r.battery_status));
         const t = data.map(x => x.t);

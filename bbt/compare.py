@@ -19,15 +19,21 @@ def resolve(ref: str) -> Path:
         return p
     if (util.RESULTS / ref / "summary.json").exists():
         return util.RESULTS / ref
+    tag, _, dev = ref.partition("@")   # "baseline" or "baseline@thor"
     tagged = []
     for d in util.RESULTS.glob("*/summary.json"):
         try:
-            if read_json(d)["tag"] == ref or d.parent.name.split("_", 1)[-1] == slug(ref):
-                tagged.append(d.parent)
-        except (KeyError, ValueError):
+            j = read_json(d)
+        except ValueError:
             continue
+        if j.get("tag") != tag:
+            continue
+        if dev and j.get("device") != dev:
+            continue
+        tagged.append(d.parent)
     if not tagged:
-        raise SystemExit(f"no session found for '{ref}' in {util.RESULTS} (see `bench list`)")
+        raise SystemExit(f"no session found for '{ref}' in {util.RESULTS} (see `bench list`; "
+                         "TAG@DEVICE picks one device's)")
     return sorted(tagged)[-1]
 
 
@@ -65,6 +71,11 @@ def _run_tools(summary: dict) -> dict:
                 out[res["name"]] = f"{r['proton'].get('name')} {r['proton'].get('version', '')}".strip()
                 break
     return out
+
+
+def _device(summary: dict, meta: dict) -> str:
+    sysd = (meta.get("snapshot") or {}).get("system") or {}
+    return summary.get("device") or sysd.get("model") or "unknown device"
 
 
 def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
@@ -108,8 +119,8 @@ def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
         if name not in names_a:
             scenarios.append({"name": name, "title": res_b["title"], "only": "b", "metrics": [],
                               "flags_a": [], "flags_b": res_b["flags"], "tool_a": None, "tool_b": tb.get(name)})
-    return {"a": {"session": da.name, "tag": sa["tag"], "started": sa["started"]},
-            "b": {"session": db.name, "tag": sb["tag"], "started": sb["started"]},
+    return {"a": {"session": da.name, "tag": sa["tag"], "started": sa["started"], "device": _device(sa, ma)},
+            "b": {"session": db.name, "tag": sb["tag"], "started": sb["started"], "device": _device(sb, mb)},
             "scenarios": scenarios,
             "config_diff": [[k, a, b] for k, a, b in config_diff(ma["snapshot"], mb["snapshot"])]}
 
@@ -117,7 +128,7 @@ def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
 def compare(ref_a: str, ref_b: str, all_metrics: bool = False) -> str:
     d = compare_data(ref_a, ref_b, all_metrics)
     out = [f"# Compare: {d['a']['tag']} -> {d['b']['tag']}", "",
-           f"- A: {d['a']['session']}", f"- B: {d['b']['session']}",
+           f"- A: {d['a']['session']} ({d['a']['device']})", f"- B: {d['b']['session']} ({d['b']['device']})",
            "- Change = (B - A) / A. 'better'/'worse' by metric direction; '~ noise' when",
            "  the change is smaller than the larger run-to-run CV of the two sessions.", ""]
     for sc in d["scenarios"]:

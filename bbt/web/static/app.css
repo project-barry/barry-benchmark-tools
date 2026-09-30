@@ -150,6 +150,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 1.25rem; }
 .cardhead .grow { flex: 1; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; }
 .grid2 > .card { margin-bottom: 0; }
+.grid2 { margin-bottom: 1rem; }
 .stack > * + * { margin-top: 1rem; }
 
 button, .btn {

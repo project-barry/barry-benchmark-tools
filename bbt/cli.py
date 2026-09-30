@@ -1,7 +1,9 @@
 """bench: headless benchmark harness for SteamOS on ARM handhelds.
 
-Runs on the device, or from another machine when remote.conf exists next to
-`bench` (remote mode: sessions run on the device, results land locally).
+Runs on the device, or from another machine that has devices registered
+(remote mode: sessions run on a device, results land locally):
+  bench devices add rp6 steamos@192.0.2.10     register a device (IP or host name)
+  bench --device thor run MATRIX --tag T       pick a device (default: bench devices default)
 
   bench run MATRIX.yaml --tag TAG     run every scenario, write a results folder
   bench compare A B                   % change per scenario/metric (A, B = tags or session names)
@@ -16,6 +18,7 @@ Runs on the device, or from another machine when remote.conf exists next to
   bench web [--host H] [--port P]     web app for starting and reviewing runs
 
 Remote mode only:
+  bench devices [list|add|remove|default|test]   the devices this machine drives
   bench deploy                        copy the harness to the device
   bench status                        what runs on the device, what is not pulled yet
   bench attach                        follow the current/last run, then pull it
@@ -53,7 +56,7 @@ def cmd_run(a):
     if a.dry_run:
         print(json.dumps(m, indent=2))
         return
-    d = session.Session(m, a.tag, Path(a.matrix)).run()
+    d = session.Session(m, a.tag, Path(a.matrix), device=a.device_label).run()
     print(d)
 
 
@@ -76,7 +79,7 @@ def cmd_list(a):
         j = read_json(s)
         scen = ", ".join(f"{r['name']}({len([x for x in r['runs'] if not x['warmup'] and x['status'] == 'ok'])})"
                          for r in j["scenarios"])
-        print(f"{d.name:40} tag={j['tag']:20} {scen}")
+        print(f"{d.name:44} tag={j['tag']:18} device={j.get('device') or '-':10} {scen}")
 
 
 def cmd_snapshot(a):
@@ -134,6 +137,58 @@ def cmd_steam(a):
         print("launch options cleared")
 
 
+def cmd_devices(a):
+    from . import devices, remote
+    act = a.action or "list"
+    try:
+        if act == "list":
+            data = devices.load()
+            if not data["devices"]:
+                print("no devices yet: bench devices add ID USER@HOST[:PORT]")
+            for d in data["devices"]:
+                mark = "*" if d["id"] == data.get("default") else " "
+                port = f":{d['port']}" if d.get("port", 22) != 22 else ""
+                print(f"{mark} {d['id']:14} {d['user']}@{d['host']}{port:6} {d['name']}"
+                      + (f"  (ssh_opts: {d['ssh_opts']})" if d.get("ssh_opts") else ""))
+        elif act == "add":
+            if not a.id or not a.target or "@" not in a.target:
+                raise SystemExit("usage: bench devices add ID USER@HOST[:PORT] [--name N] [--ssh-opts '...']")
+            user, host = a.target.split("@", 1)
+            port = 22
+            if host.count(":") == 1:
+                host, port = host.split(":")
+            d = devices.add({"id": a.id, "name": a.name, "user": user, "host": host, "port": port,
+                             "ssh_opts": a.ssh_opts, "remote_dir": a.remote_dir}, allow_ssh_opts=True, replace=a.replace)
+            print(f"added {d['id']}; testing the connection...")
+            _print_probe(remote.Remote(devices.conf(d)).probe())
+        elif act == "remove":
+            devices.remove(a.id)
+            print(f"removed {a.id} (its sessions stay in the results folder)")
+        elif act == "default":
+            devices.set_default(a.id)
+            print(f"default device: {a.id}")
+        elif act == "test":
+            d = devices.get(a.id)
+            if not d:
+                raise SystemExit(f"no device {a.id or '(default)'}")
+            _print_probe(remote.Remote(devices.conf(d)).probe())
+    except devices.DeviceError as e:
+        raise SystemExit(str(e))
+
+
+def _print_probe(r: dict) -> None:
+    if not r["ok"]:
+        hint = {"auth": "the device does not accept this machine's SSH key: ssh-copy-id USER@HOST",
+                "hostkey": "the device's host key changed; check it, then fix ~/.ssh/known_hosts",
+                "unreachable": "no connection: check the address, that it is on, and the network"}[r["problem"]]
+        print(f"FAILED ({r['problem']}): {hint}\n  {r['detail']}")
+        return
+    f = r["facts"]
+    for k in ("user", "hostname", "model", "os", "kernel", "arch", "python", "pyyaml", "steam_service", "harness", "vkmark"):
+        print(f"  {k:14} {f.get(k) or '-'}")
+    print("  ready to run" if f["can_run"] else f"  missing: {', '.join(f['missing'])}")
+
+
 def cmd_web(a):
     from .web.server import serve
     serve(a.host, a.port, not a.no_browser)
@@ -168,6 +223,7 @@ def _zst(path):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="bench", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--device", "-d", help="device id from `bench devices` (remote mode; default: the default device)")
     sp = p.add_subparsers(dest="cmd", required=True)
     r = sp.add_parser("run", help="run a matrix")
     r.add_argument("matrix")
@@ -177,6 +233,7 @@ def main(argv=None):
     r.add_argument("--warmup", type=int, help="override warm-up runs per scenario")
     r.add_argument("--dry-run", action="store_true", help="print the resolved matrix and exit")
     r.add_argument("--matrix-label", help=argparse.SUPPRESS)
+    r.add_argument("--device-label", help=argparse.SUPPRESS)
     r.add_argument("--no-deploy", action="store_true", help="remote mode: skip copying the harness first")
     r.add_argument("--keep-remote", action="store_true", help="remote mode: keep the device copy after pulling")
     r.set_defaults(fn=cmd_run)
@@ -193,6 +250,15 @@ def main(argv=None):
     c.add_argument("--out", help="also write the comparison to this .md file")
     c.set_defaults(fn=cmd_compare)
     sp.add_parser("list", help="list sessions").set_defaults(fn=cmd_list)
+    dv = sp.add_parser("devices", help="the devices this machine drives (remote mode)")
+    dv.add_argument("action", nargs="?", choices=["list", "add", "remove", "default", "test"])
+    dv.add_argument("id", nargs="?")
+    dv.add_argument("target", nargs="?", help="USER@HOST[:PORT] (add)")
+    dv.add_argument("--name", help="display name (add)")
+    dv.add_argument("--ssh-opts", default="", help="extra ssh options (add), e.g. \"-o UserKnownHostsFile=...\"")
+    dv.add_argument("--remote-dir", default="bench", help="harness folder on the device, under ~ (add)")
+    dv.add_argument("--replace", action="store_true", help="overwrite an existing device (add)")
+    dv.set_defaults(fn=cmd_devices)
     sp.add_parser("snapshot", help="print system config JSON").set_defaults(fn=cmd_snapshot)
     s = sp.add_parser("sample", help="live sensor readout")
     s.add_argument("seconds", nargs="?", type=float, default=30)
@@ -216,10 +282,24 @@ def main(argv=None):
     if a.cmd == "steam" and a.action == "set-tool" and a.tool is None:
         p.error("set-tool needs a TOOL name ('' removes the mapping)")
     from . import remote
-    conf = remote.load_conf()
+    if a.cmd == "devices":
+        return a.fn(a)
+    # argv for the device side: without this machine's --device option
+    dev_argv, skip = [], False
+    for i, x in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if x in ("--device", "-d") and i < argv.index(a.cmd):
+            skip = True
+            continue
+        if x.startswith("--device=") and i < argv.index(a.cmd):
+            continue
+        dev_argv.append(x)
+    conf = remote.load_conf(a.device)
     if conf is None:
         if a.fn is None:
-            p.error(f"`{a.cmd}` needs remote mode (a remote.conf next to bench, see remote.conf.example)")
+            p.error(f"`{a.cmd}` needs remote mode: register a device first (bench devices add ID USER@HOST)")
         a.fn(a)
         return
     util.RESULTS = remote.local_results(conf)
@@ -232,7 +312,7 @@ def main(argv=None):
     if a.cmd in handlers:
         handlers[a.cmd](r, a)
     else:  # snapshot, sample, steam, setup: run on the device as-is
-        remote.passthrough(r, argv, tty=a.cmd == "sample" and sys.stdout.isatty())
+        remote.passthrough(r, dev_argv, tty=a.cmd == "sample" and sys.stdout.isatty())
 
 
 if __name__ == "__main__":

@@ -19,9 +19,21 @@ WoW64 / ARM64EC, or FEX for the whole process).
 The harness runs on the device, but you drive it from your own machine and
 the results are saved there.
 
-1. On your machine, in this repo: `cp remote.conf.example remote.conf` and set
-   `target=steamos@<device>`. The user must be the one running Steam in Gaming
-   Mode, reachable with an SSH key. `remote.conf` is git-ignored.
+1. On your machine, in this repo, register the device (an IP address or host
+   name on your LAN or tailnet; the user is the one running Steam in Gaming
+   Mode, reachable with your SSH key):
+
+   ```sh
+   ./bench devices add rp6 steamos@192.0.2.10 --name "Retroid Pocket 6"
+   ./bench devices add thor steamos@thor.example.ts.net --name "AYN Thor"
+   ./bench devices                  # list; * marks the default
+   ./bench devices default rp6      # the one used without --device
+   ./bench devices test thor        # can we log in, what does it offer?
+   ```
+
+   The list lives in `devices.json` (git-ignored). Pick a device per command
+   with `./bench --device thor ...`. Devices can also be added, tested and
+   removed in the web app.
 2. `./bench setup`: fetches vkmark into `~/bench/opt` on the device (no root).
 3. Run, change something, run again, compare:
 
@@ -50,12 +62,16 @@ press Ctrl-C:
 | `bench compare A B`    | local sessions, by tag or folder name                              |
 | `bench web`            | the web app (below)                                                |
 
-Add `--keep-remote` to keep the device copy. Every other command (`snapshot`,
+Add `--keep-remote` to keep the device copy. Each session's folder name ends
+in its device id (`20260930-1300_baseline_thor`), so sessions from several
+devices sit side by side. `bench compare baseline@rp6 baseline@thor` compares
+two devices; a plain tag picks the newest session with that tag. Every other command (`snapshot`,
 `sample 30`, `steam tools`, `steam status <appid>`, `steam set-tool <appid>
 <tool>`, `steam unwrap <appid>`) runs on the device and prints here.
 
-Without a `remote.conf`, `bench` works locally on the device itself, with
-results in `~/bench/results`.
+With no devices registered, `bench` works locally on the device itself, with
+results in `~/bench/results`. (A `remote.conf` from an earlier version is
+imported into `devices.json` the first time.)
 
 ## Web app
 
@@ -77,12 +93,18 @@ phones and tablets.
 - **Compare**: the % change per metric, marked better / worse / within noise,
   plus the system settings that differ between the two sessions.
 - **New run**: pick a matrix, set a tag, check the scenarios on the device,
-  start the run, and watch its output live. In remote mode the run continues
+  pick one or more devices, start the run, and watch its output live. The run continues
   on the device if you close the page; the results come back here when it
   ends.
-- **Device**: what is running on the device, results not copied here yet,
-  current clocks and settings, live sensors, and buttons for fetch / stop /
-  update / install vkmark.
+- **Devices**: add a device by IP address or host name, test the connection
+  (it reports the model, OS, Python/PyYAML, whether Steam runs, and what is
+  installed), set the default, edit or remove it. Each device's page shows
+  what is running there, results not copied here yet, current clocks and
+  settings, live sensors, and buttons for fetch / stop / install or update
+  the harness / install vkmark.
+- **New run** can start the same matrix on several devices at once (A/B
+  between devices): each writes its own session with the same tag, ready for
+  Compare.
 - **Matrices**: edit, create and check matrix files in `matrices/`.
 
 The server uses only Python's standard library and loads nothing from the

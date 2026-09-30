@@ -120,14 +120,17 @@ def flags_for(sc_result: dict, sess: dict) -> list[str]:
 
 
 class Session:
-    def __init__(self, matrix: dict, tag: str, matrix_path: Path):
+    def __init__(self, matrix: dict, tag: str, matrix_path: Path, device: str | None = None):
         self.m = matrix
         self.tag = tag
+        self.device = device
         self.start = dt.datetime.now()
-        self.dir = RESULTS / f"{self.start:%Y%m%d-%H%M}_{slug(tag)}"
+        # the device id is part of the name, so sessions from several devices never collide
+        base = f"{self.start:%Y%m%d-%H%M}_{slug(tag)}" + (f"_{slug(device)}" if device else "")
+        self.dir = RESULTS / base
         n = 2
         while self.dir.exists():
-            self.dir = RESULTS / f"{self.start:%Y%m%d-%H%M}_{slug(tag)}-{n}"
+            self.dir = RESULTS / f"{base}-{n}"
             n += 1
         self.matrix_path = matrix_path
         self.results: list[dict] = []
@@ -151,7 +154,7 @@ class Session:
         log("measuring idle baseline temps (10 s)")
         baseline = measure_baseline()
         log(f"baseline: {baseline}")
-        self.meta = {"tag": self.tag, "session": self.dir.name, "started": now_iso(),
+        self.meta = {"tag": self.tag, "device": self.device, "session": self.dir.name, "started": now_iso(),
                      "matrix": self.m, "baseline_c": baseline, "snapshot": snap}
         write_json(self.dir / "session.json", self.meta)
 
@@ -230,7 +233,7 @@ class Session:
                 res["aggregate"] = stats.aggregate(measured)
                 res["primary_metric"] = next((primary_metric(m) for m in measured if primary_metric(m)), None)
                 res["flags"] = flags_for(res, self.m["session"]) + ["scenario interrupted"]
-        summary = {"tag": self.tag, "session": self.dir.name, "started": self.meta["started"],
+        summary = {"tag": self.tag, "device": self.device, "session": self.dir.name, "started": self.meta["started"],
                    "ended": self.meta.get("ended"), "baseline_c": self.meta["baseline_c"],
                    "scenarios": self.results}
         write_json(self.dir / "summary.json", summary)
