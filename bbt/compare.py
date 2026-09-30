@@ -85,12 +85,25 @@ def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
     ma, mb = read_json(da / "session.json"), read_json(db / "session.json")
     rows_b = {r["name"]: r for r in sb["scenarios"]}
     names_a = {r["name"] for r in sa["scenarios"]}
+    # scenarios pair by name; one left over on each side with the same title pairs too
+    # (the same game as a Steam scenario on SteamOS and an android one on Android)
+    pair = {n: n for n in names_a if n in rows_b}
+    left_b = [r for r in sb["scenarios"] if r["name"] not in names_a]
+    for res_a in sa["scenarios"]:
+        if res_a["name"] in pair:
+            continue
+        same_a = [r for r in sa["scenarios"] if r["title"] == res_a["title"] and r["name"] not in pair]
+        same_b = [r for r in left_b if r["title"] == res_a["title"]]
+        if len(same_a) == 1 and len(same_b) == 1:
+            pair[res_a["name"]] = same_b[0]["name"]
+    paired_b = set(pair.values())
     ta, tb = _run_tools(sa), _run_tools(sb)
     scenarios = []
     for res_a in sa["scenarios"]:
-        res_b = rows_b.get(res_a["name"])
-        sc = {"name": res_a["name"], "title": res_a["title"], "only": None if res_b else "a",
-              "tool_a": ta.get(res_a["name"]), "tool_b": tb.get(res_a["name"]),
+        res_b = rows_b.get(pair.get(res_a["name"], ""))
+        name = res_a["name"] if not res_b or res_b["name"] == res_a["name"] else f"{res_a['name']} vs {res_b['name']}"
+        sc = {"name": name, "title": res_a["title"], "only": None if res_b else "a",
+              "tool_a": ta.get(res_a["name"]), "tool_b": tb.get(res_b["name"]) if res_b else None,
               "flags_a": res_a["flags"], "flags_b": res_b["flags"] if res_b else [], "metrics": []}
         scenarios.append(sc)
         if not res_b:
@@ -116,7 +129,7 @@ def compare_data(ref_a: str, ref_b: str, all_metrics: bool = False) -> dict:
                                   "verdict": verdict, "direction": d, "noise_pct": noise,
                                   "n_a": aa[k]["n"], "n_b": ab[k]["n"]})
     for name, res_b in rows_b.items():
-        if name not in names_a:
+        if name not in paired_b:
             scenarios.append({"name": name, "title": res_b["title"], "only": "b", "metrics": [],
                               "flags_a": [], "flags_b": res_b["flags"], "tool_a": None, "tool_b": tb.get(name)})
     return {"a": {"session": da.name, "tag": sa["tag"], "started": sa["started"], "device": _device(sa, ma)},

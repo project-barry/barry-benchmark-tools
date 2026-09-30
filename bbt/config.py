@@ -26,7 +26,7 @@ DEFAULTS = {
     },
 }
 
-KINDS = {"vkmark", "steam"}
+KINDS = {"vkmark", "steam", "android"}
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -55,6 +55,8 @@ def load(path: Path, label: str | None = None) -> dict:
             raise SystemExit(f"{name}: kind must be one of {sorted(KINDS)}")
         if kind == "steam" and not sc.get("appid"):
             raise SystemExit(f"{name}: steam scenarios need an appid")
+        if kind == "android" and not sc.get("package"):
+            raise SystemExit(f"{name}: android scenarios need a package (the app that runs the game)")
         s = {"name": name, "kind": kind, "title": sc.get("title") or name,
              "runs": session["runs"], "warmup": session["warmup"], **sc}
         s["kind"] = kind

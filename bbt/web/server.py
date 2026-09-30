@@ -129,13 +129,18 @@ class App:
         return d
 
     def remote_for(self, dev_id: str | None):
-        return self.remote_mod.Remote(self.devices_mod.conf(self.device(dev_id)))
+        d = self.device(dev_id)
+        if d.get("kind") == "android":
+            from ..android import Android
+            return Android(d["serial"], d["id"])
+        return self.remote_mod.Remote(self.devices_mod.conf(d))
 
     def device_list(self) -> dict:
         data = self.devices_mod.load()
         busy = {m.get("device") for m in self.jobs.running()}
         return {"default": data.get("default"),
-                "devices": [{"id": d["id"], "name": d["name"], "user": d["user"], "host": d["host"],
+                "devices": [{"id": d["id"], "name": d["name"], "kind": d.get("kind", "ssh"), "serial": d.get("serial"),
+                             "user": d.get("user"), "host": d.get("host"),
                              "port": d.get("port", 22), "remote_dir": d.get("remote_dir", "bench"),
                              "notes": d.get("notes", ""), "custom_ssh": bool(d.get("ssh_opts")),
                              "busy": d["id"] in busy} for d in data["devices"]]}
@@ -219,6 +224,8 @@ class App:
         m = read_json(rd / "metrics.json")
         out = {"metrics": m, "frames": None, "samples": None}
         log = mangohud.find_log(rd / "mangohud") if (rd / "mangohud").is_dir() else None
+        if log is None and (rd / "frames.csv").exists():  # Android: Perfetto frame timeline, same columns
+            log = rd / "frames.csv"
         if log:
             rows = [r for r in mangohud.parse(log)["rows"] if "frametime" in r and "elapsed" in r]
             if rows:

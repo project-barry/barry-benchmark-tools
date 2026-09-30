@@ -58,7 +58,7 @@ def _memory() -> dict:
         mi[k] = v.strip()
     zram = {}
     for z in glob.glob("/sys/block/zram*"):
-        algo = re.search(r"\[(\w+)\]", rd(f"{z}/comp_algorithm"))
+        algo = re.search(r"\[([\w-]+)\]", rd(f"{z}/comp_algorithm"))
         zram[os.path.basename(z)] = {"algorithm": algo.group(1) if algo else None,
                                      "disksize_mib": (rd_int(f"{z}/disksize", 0) or 0) // 2**20}
     vm = {k: rd(f"/proc/sys/vm/{k}") for k in ("swappiness", "vfs_cache_pressure", "dirty_ratio",

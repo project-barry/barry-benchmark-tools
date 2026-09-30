@@ -10,6 +10,8 @@ zram, ...) do to real workloads, with no one holding the device:
   running Gaming Mode session over SSH
 - the same game under different Proton versions (Valve's, or custom ones in
   `compatibilitytools.d` such as GE-Proton)
+- the same game on the device's stock Android (over adb, no root), to compare
+  SteamOS with Android on the same hardware (see [Android devices](#android-devices))
 
 Every run records whether x86 code was emulated, and how (FEX through Wine
 WoW64 / ARM64EC, or FEX for the whole process).
@@ -148,6 +150,46 @@ The harness only reads sysfs. It never writes clock, voltage or power
 controls: make those changes yourself between sessions, and the snapshot
 records them.
 
+## Android devices
+
+An Android device is driven over adb instead of SSH. Nothing is installed on
+it and no root is needed; the session runs on your machine and the results
+land in the same `results/` folder, so `bench compare` works across the two
+systems.
+
+```sh
+# on the device: Developer options > Wireless debugging > Pair device with pairing code
+adb pair IP:PAIRPORT && adb connect IP:PORT
+./bench devices add rp6-android adb:$(adb shell getprop ro.serialno) --name "Retroid Pocket 6 (Android)"
+./bench --device rp6-android run matrices/android-tr2013.yaml --tag android-stock
+./bench compare first-light@rp6 android-stock@rp6-android
+```
+
+The device is found by its serial, so a new wireless-debugging port does not
+matter (it reconnects through mDNS when it can). `snapshot` and `sample` work
+too; `deploy`, `attach`, `stop` and `pull` do not apply (stop a run with
+Ctrl-C: it keeps what it measured).
+
+What a run does (`kind: android`, see `bbt/android.py`):
+
+1. Force-stop the app, start Perfetto's SurfaceFlinger frame timeline and a
+   small sh sampler in `/data/local/tmp/bbt` (same columns as on SteamOS).
+2. Start the game with `am start ...` (`launch:`), or ask you to start it
+   (`launch: manual`, with a notification on the device).
+3. Capture until the game quits (`capture: until_exit`) or for a window. The
+   game is running while `process:` matches a `ps` command line (or a layer
+   matches `layer:`, or the package is alive).
+4. Stop the trace, force-stop the app, pull the trace. Frame times are the
+   gaps between frames reaching the screen, taken from the busiest layer of
+   the app (or the one matching `layer:`); the trace is decoded here with the
+   standard library.
+
+Differences from SteamOS worth keeping in mind: Android does not show frames
+faster than the display refreshes (put the display at 120 Hz), GPU busy is
+the whole GPU (KGSL) rather than the game's processes, and the game's own
+result files stay inside the app. Scenarios whose `title` matches pair up in
+`bench compare` even when their names differ.
+
 ## Matrix file
 
 ```yaml
@@ -190,6 +232,7 @@ fade-out from the log. `wine_registry` and `game_results` are shown in
 | `summary.json`                     | Per scenario: runs, mean/median/stdev/CV, flags             |
 | `session.json`                     | Tag, matrix, system snapshot and baseline temps at start    |
 | `<scenario>/<run>/`                | `snapshot.json`, `samples.csv`, MangoHud log, game files    |
+|                                    | (Android: `frames.csv`, `frametimeline.pftrace`)            |
 | `remote-run.log`                   | The session's console output (remote mode)                  |
 
 Metrics: average FPS, 1% and 0.1% lows (1000 / mean of the slowest 1% /
@@ -210,7 +253,9 @@ frame rates sitting on a refresh-rate cap.
 
 On the device: Python 3.10+ with PyYAML (both on SteamOS), `vulkaninfo`,
 MangoHud, and Steam in Gaming Mode as a systemd user unit (`steam.service`).
-On your machine: Python 3.12+ and ssh (no PyYAML needed).
+On your machine: Python 3.12+ and ssh (no PyYAML needed). For Android
+devices also adb (`brew install --cask android-platform-tools`) and PyYAML,
+since those sessions run on your machine.
 
 ## How this was made
 

@@ -46,16 +46,16 @@ def temps() -> dict:
     return out
 
 
-def measure_baseline(seconds: float = 10) -> dict:
+def measure_baseline(seconds: float = 10, temps_fn=temps) -> dict:
     samples = []
     end = time.monotonic() + seconds
     while time.monotonic() < end:
-        samples.append(temps())
+        samples.append(temps_fn())
         time.sleep(1)
     return {g: round(st.median(s[g] for s in samples if g in s), 1) for g in ("cpu", "gpu") if any(g in s for s in samples)}
 
 
-def cooldown(cfg: dict, baseline: dict) -> dict:
+def cooldown(cfg: dict, baseline: dict, temps_fn=temps) -> dict:
     """Wait for a comparable starting point, not for a cold device.
 
     Ends at the first of: CPU and GPU back within tolerance of the idle
@@ -69,14 +69,14 @@ def cooldown(cfg: dict, baseline: dict) -> dict:
     target = {"cpu": (cfg.get("baseline_c") or baseline.get("cpu", 45)) + tol,
               "gpu": (cfg.get("baseline_gpu_c") or baseline.get("gpu", 45)) + tol}
     t0 = time.monotonic()
-    start = temps()
+    start = temps_fn()
     hist: list[tuple[float, dict]] = []
     log(f"cooldown: cpu {start.get('cpu')} C, gpu {start.get('gpu')} C "
         f"(baseline+{tol}: {target['cpu']:.1f} / {target['gpu']:.1f} C, or level for {win} s, max {hi} s)")
     reason = "max_s"
     while True:
         waited = time.monotonic() - t0
-        cur = temps()
+        cur = temps_fn()
         hist.append((waited, cur))
         if all(cur.get(g, 0) <= target[g] for g in target) and waited >= lo:
             reason = "baseline"
@@ -110,12 +110,12 @@ def expected_seconds(sc: dict, sess: dict) -> float:
     return (sc["warmup"] + sc["runs"]) * (per + cool)
 
 
-def throttle_text(throttled: dict) -> str:
+def throttle_text(throttled: dict, rd=rd) -> str:
     """{'devfreq-3d00000.gpu': 5} -> 'GPU capped at 348 MHz at worst (step 5 of 7)'.
 
     A thermal cooling device's state N limits the component to its Nth-highest
     frequency, so the cap is read from the frequency table (on the device, at
-    the end of the session)."""
+    the end of the session; `rd` reads the device's files)."""
     parts = []
     for name, state in sorted(throttled.items()):
         what, freqs, unit = name, [], 1
@@ -139,7 +139,7 @@ def throttle_text(throttled: dict) -> str:
     return "; ".join(parts)
 
 
-def flags_for(sc_result: dict, sess: dict) -> list[str]:
+def flags_for(sc_result: dict, sess: dict, rd=rd) -> list[str]:
     runs = [r for r in sc_result["runs"] if not r["warmup"] and r["status"] == "ok"]
     fl = []
     want = sc_result["config"]["runs"]
@@ -166,7 +166,7 @@ def flags_for(sc_result: dict, sess: dict) -> list[str]:
         if (r.get("cooldown") or {}).get("timed_out"):
             fl.append(f"{r['run']} started while still cooling (hit the {sess['cooldown']['max_s']} s cooldown limit)")
         if r["metrics"].get("throttled"):
-            fl.append(f"{r['run']}: slowed by heat: {throttle_text(r['metrics']['throttled'])}")
+            fl.append(f"{r['run']}: slowed by heat: {throttle_text(r['metrics']['throttled'], rd)}")
         if r.get("warning"):
             fl.append(f"{r['run']}: {r['warning']}")
     starts = [((r.get("cooldown") or {}).get("end_c") or {}) for r in runs]
@@ -189,8 +189,44 @@ def flags_for(sc_result: dict, sess: dict) -> list[str]:
     return fl
 
 
+class Local:
+    """The platform when the harness runs on the device itself (SteamOS): its own
+    sysfs, Steam and vkmark. android.Android is the one for Android devices."""
+    kind = "linux"
+    rd = staticmethod(rd)
+
+    def temps(self) -> dict:
+        return temps()
+
+    def snapshot(self) -> dict:
+        return sysinfo.snapshot()
+
+    def run_snapshot(self) -> dict:
+        return {"static": sysinfo._static(), **sysinfo.dynamic()}
+
+    def lock_path(self) -> Path:
+        return STATE / "bench.lock"
+
+    def prepare(self) -> None:
+        pass
+
+    def finish(self) -> None:
+        pass
+
+    def runner(self, kind: str):
+        if kind not in runners.RUNNERS:
+            raise SystemExit(f"{kind} scenarios run on Android devices (register one: bench devices add ID adb:SERIAL)")
+        return runners.RUNNERS[kind]
+
+    def cleanup(self, sc: dict) -> None:
+        if sc["kind"] == "steam":
+            runners._clear_run_env()
+            steam.kill(str(sc["appid"]))
+
+
 class Session:
-    def __init__(self, matrix: dict, tag: str, matrix_path: Path, device: str | None = None):
+    def __init__(self, matrix: dict, tag: str, matrix_path: Path, device: str | None = None, platform=None):
+        self.p = platform or Local()
         self.m = matrix
         self.tag = tag
         self.device = device
@@ -207,8 +243,9 @@ class Session:
         self.stop_requested = False
 
     def _lock(self):
-        STATE.mkdir(parents=True, exist_ok=True)
-        self._lockf = open(STATE / "bench.lock", "w")
+        path = self.p.lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._lockf = open(path, "w")
         try:
             fcntl.flock(self._lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -221,9 +258,10 @@ class Session:
         sess = self.m["session"]
         est = sum(expected_seconds(sc, sess) for sc in self.m["scenarios"]) + 15
         log(f"session {self.dir.name}: {len(self.m['scenarios'])} scenario(s), about {est / 60:.0f} min")
-        snap = sysinfo.snapshot()
+        self.p.prepare()
+        snap = self.p.snapshot()
         log("measuring idle baseline temps (10 s)")
-        baseline = measure_baseline()
+        baseline = measure_baseline(temps_fn=self.p.temps)
         log(f"baseline: {baseline}")
         self.meta = {"tag": self.tag, "device": self.device, "session": self.dir.name, "started": now_iso(),
                      "matrix": self.m, "baseline_c": baseline, "snapshot": snap}
@@ -246,6 +284,10 @@ class Session:
             log("interrupted: writing what was measured so far")
         finally:
             signal.signal(signal.SIGTERM, old)
+            try:
+                self.p.finish()
+            except Exception as e:  # never lose the results over it
+                log(f"could not restore device settings: {e}")
             self.meta["ended"] = now_iso()
             self.meta["interrupted"] = self.stop_requested
             write_json(self.dir / "session.json", self.meta)
@@ -253,7 +295,7 @@ class Session:
         return self.dir
 
     def _scenario(self, sc: dict, sess: dict, baseline: dict):
-        runner = runners.RUNNERS[sc["kind"]]
+        runner = self.p.runner(sc["kind"])
         res = {"name": sc["name"], "title": sc["title"], "kind": sc["kind"], "config": sc, "runs": []}
         self.results.append(res)
         total = sc["warmup"] + sc["runs"]
@@ -263,11 +305,10 @@ class Session:
             run_dir = self.dir / slug(sc["name"]) / label
             run_dir.mkdir(parents=True)
             log(f"== {sc['name']} {label} ({i + 1}/{total})")
-            cd = cooldown(sess["cooldown"], baseline)
+            cd = cooldown(sess["cooldown"], baseline, self.p.temps)
             rec = {"scenario": sc["name"], "run": label, "warmup": warm, "cooldown": cd,
                    "started": now_iso(), "metrics": {}}
-            snap = sysinfo.dynamic()
-            write_json(run_dir / "snapshot.json", {"static": sysinfo._static(), **snap})
+            write_json(run_dir / "snapshot.json", self.p.run_snapshot())
             try:
                 out = runner(sc, run_dir, sess["sample_interval_s"])
                 rec.update(out)
@@ -280,9 +321,10 @@ class Session:
                 rec.update(status="failed", error=str(e))
                 (run_dir / "error.txt").write_text(traceback.format_exc())
                 log(f"run failed: {e}")
-                if sc["kind"] == "steam":
-                    runners._clear_run_env()
-                    steam.kill(str(sc["appid"]))
+                try:
+                    self.p.cleanup(sc)
+                except Exception as ce:  # cleanup must not end the session either
+                    log(f"cleanup failed: {ce}")
             self._finish_run(rec, run_dir, res)
             pm = primary_metric(rec["metrics"])
             if pm:
@@ -291,7 +333,7 @@ class Session:
         measured = [r["metrics"] for r in res["runs"] if not r["warmup"] and r["status"] == "ok"]
         res["aggregate"] = stats.aggregate(measured)
         res["primary_metric"] = next((primary_metric(m) for m in measured if primary_metric(m)), None)
-        res["flags"] = flags_for(res, sess)
+        res["flags"] = flags_for(res, sess, self.p.rd)
         for f in res["flags"]:
             log(f"FLAG {sc['name']}: {f}")
 
@@ -307,7 +349,7 @@ class Session:
                 measured = [r["metrics"] for r in res["runs"] if not r["warmup"] and r["status"] == "ok"]
                 res["aggregate"] = stats.aggregate(measured)
                 res["primary_metric"] = next((primary_metric(m) for m in measured if primary_metric(m)), None)
-                res["flags"] = flags_for(res, self.m["session"]) + ["scenario interrupted"]
+                res["flags"] = flags_for(res, self.m["session"], self.p.rd) + ["scenario interrupted"]
         summary = {"tag": self.tag, "device": self.device, "session": self.dir.name, "started": self.meta["started"],
                    "ended": self.meta.get("ended"), "baseline_c": self.meta["baseline_c"],
                    "scenarios": self.results}

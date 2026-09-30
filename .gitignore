@@ -8,3 +8,4 @@ scratch/
 remote.conf
 .bbt-web/
 devices.json
+.bbt-state/

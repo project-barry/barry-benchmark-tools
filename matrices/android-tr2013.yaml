@@ -1,0 +1,53 @@
+# Tomb Raider (2013) on Android through GameNative, to compare with the Proton
+# run in first-light.yaml on SteamOS (same title, so `bench compare` pairs them):
+#   bench --device rp6-android run matrices/android-tr2013.yaml --tag android-stock
+#   bench compare first-light@rp6 android-stock@rp6-android
+#
+# Set up once in GameNative (the harness cannot reach the app's own files):
+# - Launch options for the game: -nolauncher -benchmark (the built-in
+#   benchmark runs on start and quits by itself, about 75 s). Without them
+#   the game sits in its settings launcher and no frames are captured.
+# - Container screen size 1920x1080 (GameNative's default is 1280x720, which
+#   is what the game would render at)
+# - Graphics as the SteamOS run actually used them (the "Quality settings" in
+#   its benchmarkresults file; the game lowered TextureQuality from the 2 in
+#   first-light.yaml to 0). Start once without -nolauncher and set them in the
+#   game's launcher:
+#   1920x1080 exclusive fullscreen, VSync Off, Texture Quality Low (0),
+#   Texture Filter 4x Anisotropic (6), Hair Normal (0), Anti-Aliasing FXAA (1),
+#   Shadows on (1), Shadow Resolution Normal (1), SSAO Normal (1),
+#   Depth of Field Normal (1), Reflections Normal (1), Level of Detail High (2),
+#   Tessellation Off, post-processing / motion blur / screen effects On,
+#   High Precision Off
+# On the device: display at 120 Hz (quick settings: peak refresh rate), or
+# frame rates stop at 60; and the same power source as the SteamOS session.
+session:
+  runs: 3
+  warmup: 1
+  variance_cv_pct: 3
+  cooldown:
+    tolerance_c: 3
+    plateau_s: 15
+    max_s: 90
+
+scenarios:
+  - name: tr2013-gamenative
+    title: Tomb Raider (2013)
+    kind: android
+    package: app.gamenative
+    launch: [-n, app.gamenative/.MainActivity, -a, app.gamenative.LAUNCH_GAME,
+             --ei, app_id, 203160, --es, game_source, STEAM]
+    process: '(?i)tombraider\.exe'   # the game's own process: running while this matches
+    # GameNative draws the game into a SurfaceView that Perfetto's frame timeline
+    # sees as one frame: read SurfaceFlinger's frame log for that layer instead
+    frame_source: surfaceflinger
+    layer: '^SurfaceView\[app\.gamenative.*\(BLAST\)'   # grep -E on `dumpsys SurfaceFlinger --list`
+    # the benchmark changes the save, so GameNative asks about a Steam Cloud conflict at start;
+    # keep the local copy (the cloud one can bring back old graphics settings, VSync on)
+    tap_buttons: ['(?i)^(use|keep|choose)?\s*local\b(?!.*conflict)']
+    capture: until_exit
+    trim_start_s: 6                  # loading screen before the flythrough
+    trim_end_s: 1
+    launch_timeout_s: 240            # Wine starts up first
+    timeout_s: 600
+    expected_s: 120

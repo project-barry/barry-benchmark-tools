@@ -36,22 +36,26 @@ def gpu_devfreq() -> str | None:
     return None
 
 
+def zone_group(t: str) -> str | None:
+    """Thermal zone type -> group (cpu, gpu, mem, battery) or None."""
+    if t.startswith(("cpu", "cpuss")):
+        return "cpu"
+    if t.startswith("gpu"):
+        return "gpu"
+    if t.startswith("mem") or t == "ddr":
+        return "mem"
+    if t == "battery":
+        return "battery"
+    return None
+
+
 def thermal_zones() -> dict[str, str]:
-    """group -> list of temp files; groups: cpu, gpu, mem, battery, soc_other."""
+    """group -> list of temp files; groups: cpu, gpu, mem, battery."""
     groups: dict[str, list[str]] = {}
     for z in glob.glob("/sys/class/thermal/thermal_zone*"):
-        t = rd(f"{z}/type")
-        if t.startswith(("cpu", "cpuss")):
-            g = "cpu"
-        elif t.startswith("gpu"):
-            g = "gpu"
-        elif t.startswith("mem"):
-            g = "mem"
-        elif t == "battery":
-            g = "battery"
-        else:
-            continue
-        groups.setdefault(g, []).append(f"{z}/temp")
+        g = zone_group(rd(f"{z}/type"))
+        if g:
+            groups.setdefault(g, []).append(f"{z}/temp")
     return groups
 
 
@@ -81,14 +85,17 @@ def _uevent(name: str) -> dict:
 
 def power_state() -> dict:
     """Instantaneous power source + estimated system draw (W)."""
-    bat = _uevent("battery")
+    names = [n for n in (os.listdir(PS) if os.path.isdir(PS) else []) if n != "battery"]
+    return power_from(_uevent("battery"), [_uevent(n) for n in names])
+
+
+def power_from(bat: dict, supplies: list[dict]) -> dict:
+    """power_state() from uevent-style dicts (VOLTAGE_NOW, CURRENT_NOW, ONLINE,
+    STATUS, CAPACITY): the battery and the other power supplies (USB, charger)."""
     v = int(bat.get("VOLTAGE_NOW", 0) or 0) / 1e6
     i = int(bat.get("CURRENT_NOW", 0) or 0) / 1e6   # + = charging, - = discharging
     ac_in_w, ac = 0.0, False
-    for name in os.listdir(PS) if os.path.isdir(PS) else []:
-        if name == "battery":
-            continue
-        u = _uevent(name)
+    for u in supplies:
         if u.get("ONLINE") == "1":
             ac = True
             vin = int(u.get("VOLTAGE_NOW", 0) or 0) / 1e6

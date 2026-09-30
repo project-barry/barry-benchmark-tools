@@ -4,7 +4,12 @@ devices.json sits next to `bench` and is git-ignored (it holds addresses):
 
     {"default": "rp6",
      "devices": [{"id": "rp6", "name": "Retroid Pocket 6", "user": "steamos",
-                  "host": "192.0.2.10", "port": 22, "ssh_opts": "", "remote_dir": "bench"}]}
+                  "host": "192.0.2.10", "port": 22, "ssh_opts": "", "remote_dir": "bench"},
+                 {"id": "rp6-android", "name": "Retroid Pocket 6 (Android)", "kind": "android",
+                  "serial": "0123abcd"}]}
+
+An Android device (kind "android") is reached over adb by its hardware serial
+(`adb shell getprop ro.serialno`); its sessions run on this machine, see android.py.
 
 `bench --device ID ...` (or the web app) picks one; without --device the
 default is used. A remote.conf from before the registry is imported once as
@@ -45,6 +50,19 @@ def valid_host(host: str) -> bool:
 
 def check(dev: dict, *, allow_ssh_opts: bool) -> dict:
     """Normalized copy of dev, or DeviceError."""
+    if dev.get("kind") == "android":
+        from .adb import SERIAL_RE
+        d = {k: dev.get(k) for k in ("id", "name", "serial", "notes")}
+        d["kind"] = "android"
+        d["id"] = (d["id"] or "").strip().lower()
+        if not ID_RE.match(d["id"]):
+            raise DeviceError("id: lowercase letters, digits and -, up to 32, e.g. rp6-android")
+        d["name"] = (d["name"] or d["id"]).strip()[:60]
+        d["serial"] = (d["serial"] or "").strip()
+        if not SERIAL_RE.match(d["serial"]):
+            raise DeviceError("adb serial: the device's serial (adb shell getprop ro.serialno) or an adb IP:PORT")
+        d["notes"] = (d["notes"] or "").strip()[:200]
+        return d
     d = {k: dev.get(k) for k in ("id", "name", "user", "host", "port", "ssh_opts", "remote_dir", "notes")}
     d["id"] = (d["id"] or "").strip().lower()
     if not ID_RE.match(d["id"]):
@@ -128,7 +146,7 @@ def add(dev: dict, *, allow_ssh_opts: bool, replace: bool = False) -> dict:
     old = next((x for x in data["devices"] if x["id"] == d["id"]), None)
     if old and not replace:
         raise DeviceError(f"a device called {d['id']} exists already")
-    if old and not allow_ssh_opts:
+    if old and not allow_ssh_opts and d.get("kind") != "android":
         d["ssh_opts"] = old.get("ssh_opts", "")  # web edits keep what the CLI set
     ids = [x["id"] for x in data["devices"]]
     if d["id"] in ids:
@@ -160,7 +178,13 @@ def set_default(dev_id: str) -> None:
 
 
 def conf(dev: dict, data: dict | None = None) -> dict:
-    """The dict remote.Remote takes."""
+    """The dict remote.Remote takes (android.Android for an Android device)."""
+    if dev.get("kind") == "android":
+        c = {"kind": "android", "serial": dev["serial"], "device": dev["id"]}
+        res = (data or load()).get("results")
+        if res:
+            c["results"] = res
+        return c
     host = f"[{dev['host']}]" if ":" in dev["host"] else dev["host"]
     opts = dev.get("ssh_opts", "")
     if int(dev.get("port") or 22) != 22:

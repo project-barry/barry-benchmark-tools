@@ -21,6 +21,8 @@ KEY_METRICS = [
     ("ft_p999_ms", "Frame time p99.9 (ms)"),
     ("ft_stdev_ms", "Frame time stdev (ms)"),
     ("hitches", "Hitches (> 50 ms / 3x median)"),
+    ("app_fps", "Frames queued/s, shown or not (Android)"),
+    ("late_frames_pct", "Late frames (%, Android)"),
     ("cpu_load_avg", "CPU load avg (%)"),
     ("policy0_mhz_avg", "CPU little clock avg (MHz)"),
     ("policy3_mhz_avg", "CPU mid clock avg (MHz)"),
@@ -66,7 +68,7 @@ def fmt(v, nd=2) -> str:
 
 def table(headers: list[str], rows: list[list], align: list[str] | None = None) -> str:
     """GFM pipe table with padded columns. align: 'l' or 'r' per column."""
-    cells = [[str(h) for h in headers]] + [[fmt(c).replace("|", "\\|") for c in r] for r in rows]
+    cells = [[str(h) for h in headers]] + [[" ".join(fmt(c).split()).replace("|", "\\|") for c in r] for r in rows]
     align = align or ["l"] * len(headers)
     w = [max(3, *(len(r[i]) for r in cells)) for i in range(len(headers))]
 
@@ -112,14 +114,25 @@ def _conditions(summary: dict, meta: dict, results: list[dict]) -> list[list]:
         rows.append([f"CPU {p['policy']} ({rng})", f"{p['governor']}, {p['min_mhz']}-{p['max_mhz']} MHz{cap}"])
     for d in snap["devfreq"]:
         if "gpu" in d["name"]:
-            rows.append(["GPU devfreq", f"{d['governor']}, {d['min_mhz']}-{d['max_mhz']} MHz, "
-                                        f"polling {d['polling_interval_ms']} ms"])
+            poll = f", polling {d['polling_interval_ms']} ms" if d.get("polling_interval_ms") is not None else ""
+            rows.append(["GPU devfreq", f"{d['governor']}, {d['min_mhz']}-{d['max_mhz']} MHz{poll}"])
     sch = snap["scheduler"]
-    rows.append(["CPU scheduler", f"sched_ext {sch['sched_ext']}{' (' + sch['sched_ext_ops'] + ')' if sch['sched_ext_ops'] else ''}, "
-                                  f"boostd {'on' if sch['boostd'] else 'off'}, cpuidle {snap['cpuidle']['governor']}"])
+    if "vendor_perf_hal" in sch:  # Android
+        rows.append(["CPU scheduler", f"Android (WALT/EAS kernel), Qualcomm perf HAL {sch['vendor_perf_hal'] or 'absent'}, "
+                                      f"cpuidle {snap['cpuidle']['governor']}"])
+    else:
+        rows.append(["CPU scheduler", f"sched_ext {sch['sched_ext']}{' (' + sch['sched_ext_ops'] + ')' if sch['sched_ext_ops'] else ''}, "
+                                      f"boostd {'on' if sch['boostd'] else 'off'}, cpuidle {snap['cpuidle']['governor']}"])
     mem = snap["memory"]
     zr = ", ".join(f"{k} {v['algorithm']} {v['disksize_mib']} MiB" for k, v in mem["zram"].items()) or "none"
     rows.append(["Memory", f"{mem['total']}, zram: {zr}, swappiness {mem['vm']['swappiness']}, THP {mem['thp']}"])
+    disp = snap.get("display")
+    if disp:
+        rows.append(["Display", f"{disp.get('refresh_hz') or '?'} Hz (frame rates above this are not shown)"])
+    settings = sysd.get("settings") or {}
+    if settings:
+        rows.append(["Device settings", ", ".join(f"{k.split('.', 1)[1]}={v}" for k, v in settings.items()
+                                                  if "sound" not in k and "vibration" not in k)])
     gs = snap["gamescope"]
     if gs.get("running"):
         rows.append(["Gamescope", f"nested {gs['nested']}, output {gs['output']}, frame limit {gs['framerate_limit']}"])
@@ -140,6 +153,18 @@ def _scenario_section(res: dict) -> str:
             desc.append(f"- Capture: {cfg.get('duration_s', 60)} s, starting {cfg.get('settle_s', 30)} s after the first frame")
         for key, vals in (cfg.get("wine_registry") or {}).items():
             desc.append(f"- Game settings (registry {key}): " + ", ".join(f"{k}={v}" for k, v in vals.items()))
+    elif res["kind"] == "android":
+        launch = cfg.get("launch", "manual")
+        desc.append(f"- App: {cfg['package']}, started "
+                    + ("by hand" if launch == "manual" else f"with `am start {' '.join(map(str, launch)) if isinstance(launch, list) else launch}`"))
+        if cfg.get("capture", "until_exit") == "until_exit":
+            desc.append(f"- Capture: first frame until the game quits by itself, trimmed "
+                        f"{cfg.get('trim_start_s', 0)} s at the start and {cfg.get('trim_end_s', 0)} s at the end")
+        else:
+            desc.append(f"- Capture: {cfg.get('duration_s', 60)} s, starting {cfg.get('settle_s', 30)} s after the first frame")
+        ok_runs = [r for r in res["runs"] if r["status"] == "ok"]
+        if ok_runs and ok_runs[0].get("layer"):
+            desc.append(f"- Frames: SurfaceFlinger layer `{ok_runs[0]['layer']}` (Perfetto frame timeline)")
     else:
         v = cfg.get("vkmark", {})
         desc.append(f"- vkmark {v.get('winsys', 'headless')} {v.get('size', '1920x1080')}, "
@@ -210,14 +235,24 @@ def render(title: str, summary: dict, meta: dict, results: list[dict]) -> str:
         "",
     ]
     lines += [_scenario_section(r) for r in results]
+    android = any(r["kind"] == "android" for r in results)
     lines += [
         "## Notes",
         "",
         "- Average FPS = frames / capture time. 1% and 0.1% lows = 1000 / mean of the",
         "  slowest 1% / 0.1% frame times. Frame-time percentiles are per frame",
+    ] + ([
+        "  (the time between frames reaching the screen, from Perfetto's",
+        "  SurfaceFlinger frame timeline).",
+        "- Clocks, load, temps and power come from the harness's own sampler (1 s,",
+        "  over adb) over the capture window. GPU busy is the whole GPU (KGSL), not",
+        "  just the game. app_fps counts every buffer the game queued, including",
+        "  ones dropped before they reached the screen.",
+    ] if android else [
         "  (MangoHud log_interval=0).",
         "- Clocks, load, temps and power come from the harness's own sysfs sampler",
         "  (1 s) over the capture window; mh_* values are MangoHud's own readings.",
+    ]) + [
         "- On AC power, system draw is an estimate; compare power only between runs",
         "  with the same power source.",
         "- Raw data: runs.csv and summary.json in this folder; per-run logs, samples",

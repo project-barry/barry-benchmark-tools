@@ -527,7 +527,7 @@
     const warm = h("input", { type: "number", min: 0, max: 10, placeholder: "from matrix" });
     const devBox = h("div", { class: "checks" }, devs.map(d => h("label", null,
       h("input", { type: "checkbox", name: "dev", value: d.id, checked: d.id === info.default_device, disabled: d.busy }),
-      h("span", null, h("b", null, d.name), h("span", { class: "muted" }, ` · ${d.user}@${d.host}${d.busy ? " · busy" : ""}`)))));
+      h("span", null, h("b", null, d.name), h("span", { class: "muted" }, ` · ${devAddr(d)}${d.busy ? " · busy" : ""}`)))));
     const scen = h("div", { class: "checks" }, h("span", { class: "muted small" }, "Check the matrix to list its scenarios."));
     const msg = h("div");
     const start = h("button", { class: "primary", type: "submit" }, "Start run");
@@ -653,6 +653,7 @@
   }
 
   // ---------------------------------------------------------------- devices
+  const devAddr = d => d.kind === "android" ? `adb:${d.serial}` : `${d.user}@${d.host}${d.port && d.port !== 22 ? ":" + d.port : ""}`;
   const PROBLEM = {
     auth: "The device does not accept this computer's SSH key. On this computer run: ssh-copy-id ",
     hostkey: "The device's SSH host key changed since the last connection (reinstalled, or a different device at that address). " +
@@ -660,6 +661,24 @@
     unreachable: "No connection. Check the address, that the device is on and awake, and that both are on the same network or tailnet.",
   };
   function probeView(p, dev) {
+    if (!p.ok && p.problem === "adb") {
+      return h("div", null, h("p", null, status("bad", "Not connected over adb")),
+        h("p", { class: "small" }, "On the device: Developer options > Wireless debugging on, then on this computer: adb connect IP:PORT (the port shown there)."),
+        h("pre", { class: "console small" }, p.detail || ""));
+    }
+    if (p.ok && p.facts.kind === "android") {
+      const f = p.facts;
+      const yes = v => v ? "yes" : "no";
+      const rows = [["Model", f.model], ["Serial", f.serial], ["Connection", f.transport], ["OS", f.os],
+        ["Kernel", `${f.kernel} (${f.arch})`], ["Perfetto", `${f.perfetto || "-"}, frame timeline ${yes(f.frametimeline)}`],
+        ["CPU clocks readable", yes(f.cpufreq)], ["GPU busy readable", yes(f.gpu_busy)],
+        ["Bootloader unlocked", yes(f.bootloader_unlocked)], ["Game apps", f.packages]]
+        .map(([k, v]) => ({ cells: [k, v || "-"] }));
+      return h("div", null,
+        h("p", null, f.can_run ? status("good", "Ready to run") : status("bad", `Missing: ${f.missing.join(", ")}`)),
+        h("p", { class: "small muted" }, "Android sessions run on this computer and reach the device over adb (kind: android scenarios)."),
+        table(["", ""], rows));
+    }
     if (!p.ok) {
       const hint = PROBLEM[p.problem] + (p.problem === "auth" ? `${dev.user}@${dev.host}` : "");
       return h("div", null, h("p", null, status("bad", { auth: "Key not accepted", hostkey: "Host key changed", unreachable: "Unreachable" }[p.problem])),
@@ -685,15 +704,27 @@
       user: h("input", { type: "text", value: dev ? dev.user : "steamos", maxlength: 32, spellcheck: "false" }),
       port: h("input", { type: "number", value: dev ? dev.port : 22, min: 1, max: 65535 }),
       remote_dir: h("input", { type: "text", value: dev ? dev.remote_dir : "bench", spellcheck: "false" }),
+      kind: h("select", { disabled: !!dev }, [["ssh", "SteamOS (SSH)"], ["android", "Android (adb)"]]
+        .map(([v, t]) => h("option", { value: v, selected: (dev ? dev.kind : "ssh") === v }, t))),
+      serial: h("input", { type: "text", value: dev && dev.serial ? dev.serial : "", placeholder: "adb shell getprop ro.serialno", autocomplete: "off", spellcheck: "false" }),
     };
+    const sshOnly = [], adbOnly = [];
+    const showKind = () => {
+      const a = f.kind.value === "android";
+      sshOnly.forEach(x => x.classList.toggle("hidden", a));
+      adbOnly.forEach(x => x.classList.toggle("hidden", !a));
+    };
+    f.kind.addEventListener("change", showKind);
     const msg = h("div");
     const out = h("div");
     const save = h("button", { class: "primary", type: "submit" }, dev ? "Save" : "Add and test");
     const form = h("form", { onsubmit: async e => {
       e.preventDefault();
       msg.textContent = ""; out.textContent = "";
-      const body = { id: f.id.value.trim(), name: f.name.value.trim(), host: f.host.value.trim(), user: f.user.value.trim(),
-        port: f.port.value, remote_dir: f.remote_dir.value.trim() };
+      const body = f.kind.value === "android"
+        ? { id: f.id.value.trim(), name: f.name.value.trim(), kind: "android", serial: f.serial.value.trim() }
+        : { id: f.id.value.trim(), name: f.name.value.trim(), host: f.host.value.trim(), user: f.user.value.trim(),
+            port: f.port.value, remote_dir: f.remote_dir.value.trim() };
       save.disabled = true;
       try {
         if (dev) { await api(`devices/${enc(dev.id)}`, { method: "PUT", body }); msg.appendChild(banner("Saved.")); }
@@ -711,13 +742,16 @@
       h("div", { class: "form" },
         h("label", { class: "field" }, "Short id (used in session names)", f.id),
         h("label", { class: "field" }, "Name", f.name),
-        h("label", { class: "field" }, "Address", f.host),
-        h("label", { class: "field" }, "SSH user (the one running Steam)", f.user),
-        h("label", { class: "field" }, "SSH port", f.port),
-        h("label", { class: "field" }, "Harness folder (under ~)", f.remote_dir)),
-      h("p", { class: "small muted" }, "This computer logs in with its SSH key (no passwords). If the device does not know the key yet, run ssh-copy-id USER@ADDRESS once. " +
-        "A new device's host key is trusted on first contact; a changed key is refused."),
+        h("label", { class: "field" }, "Kind", f.kind),
+        ...[["Address", f.host], ["SSH user (the one running Steam)", f.user], ["SSH port", f.port], ["Harness folder (under ~)", f.remote_dir]]
+          .map(([t, el]) => { const l = h("label", { class: "field" }, t, el); sshOnly.push(l); return l; }),
+        (() => { const l = h("label", { class: "field" }, "adb serial", f.serial); adbOnly.push(l); return l; })()),
+      (() => { const p = h("p", { class: "small muted" }, "This computer logs in with its SSH key (no passwords). If the device does not know the key yet, run ssh-copy-id USER@ADDRESS once. " +
+        "A new device's host key is trusted on first contact; a changed key is refused."); sshOnly.push(p); return p; })(),
+      (() => { const p = h("p", { class: "small muted" }, "Pair the device with this computer first (Developer options > Wireless debugging > Pair device, then adb pair and adb connect). " +
+        "The serial stays the same when the wireless port changes."); adbOnly.push(p); return p; })(),
       msg, h("div", { class: "btnrow" }, save), out);
+    showKind();
     return form;
   }
 
@@ -737,7 +771,7 @@
       list.appendChild(card(
         h("div", { class: "cardhead" }, h("h2", { class: "grow" }, h("a", { href: `#/devices/${enc(d.id)}` }, d.name)),
           isDef ? h("span", { class: "chip" }, "default") : null, d.busy ? status("warn", "busy") : null),
-        h("p", { class: "small ink-2 mono" }, `${d.id} · ${d.user}@${d.host}${d.port !== 22 ? ":" + d.port : ""} · ~/${d.remote_dir}` +
+        h("p", { class: "small ink-2 mono" }, `${d.id} · ${devAddr(d)}` + (d.kind === "android" ? "" : ` · ~/${d.remote_dir}`) +
           (d.custom_ssh ? " · custom ssh options" : "")),
         h("div", { class: "btnrow" }, h("a", { class: "btn", href: `#/devices/${enc(d.id)}` }, "Open"), test,
           !isDef ? h("button", { onclick: async () => { try { await api(`devices/${enc(d.id)}/default`, { method: "POST", body: {} }); await refreshInfo(); route(); } catch (e) { alert(e.message); } } }, "Make default") : null,
@@ -770,7 +804,7 @@
       h("div", { class: "pagehead" }, h("div", { class: "grow" },
         h("div", { class: "small" }, h("a", { href: "#/devices" }, "Devices"), " / "),
         h("h1", null, dev.name),
-        h("p", { class: "muted mono small" }, `${dev.id} · ${dev.user}@${dev.host}${dev.port !== 22 ? ":" + dev.port : ""}`)),
+        h("p", { class: "muted mono small" }, `${dev.id} · ${devAddr(dev)}`)),
         h("div", { class: "btnrow" }, h("button", { onclick: () => editCard.classList.toggle("hidden") }, "Edit"),
           h("a", { class: "btn", href: "#/run" }, "New run"))),
       editCard,
@@ -794,7 +828,7 @@
         if (s.running.length) actions.append(h("button", { class: "primary", onclick: () => job("attach") }, "Follow and fetch"),
           h("button", { class: "danger", onclick: () => job("stop", `Stop the run on ${dev.name}? It keeps what it measured so far.`) }, "Stop run"));
         if (s.unpulled.length) actions.append(h("button", { class: "primary", onclick: () => job("pull") }, "Fetch results"));
-        actions.append(h("button", { onclick: () => job("deploy") }, "Install / update the harness"),
+        if (dev.kind !== "android") actions.append(h("button", { onclick: () => job("deploy") }, "Install / update the harness"),
           h("button", { onclick: () => job("setup") }, "Install vkmark"));
       }
     } catch (e) { statusBox.textContent = ""; statusBox.appendChild(banner(e.message, "error")); }

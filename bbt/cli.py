@@ -3,6 +3,7 @@
 Runs on the device, or from another machine that has devices registered
 (remote mode: sessions run on a device, results land locally):
   bench devices add rp6 steamos@192.0.2.10     register a device (IP or host name)
+  bench devices add rp6-android adb:SERIAL     register an Android device (adb; sessions run here)
   bench --device thor run MATRIX --tag T       pick a device (default: bench devices default)
 
   bench run MATRIX.yaml --tag TAG     run every scenario, write a results folder
@@ -57,7 +58,8 @@ def cmd_run(a):
         m["estimate_s"] = round(sum(session.expected_seconds(sc, m["session"]) for sc in m["scenarios"]) + 15)
         print(json.dumps(m, indent=2))
         return
-    d = session.Session(m, a.tag, Path(a.matrix), device=a.device_label).run()
+    d = session.Session(m, a.tag, Path(a.matrix), device=a.device_label,
+                        platform=getattr(a, "platform", None)).run()
     print(d)
 
 
@@ -84,6 +86,9 @@ def cmd_list(a):
 
 
 def cmd_snapshot(a):
+    if getattr(a, "platform", None):
+        print(json.dumps(a.platform.snapshot(), indent=2))
+        return
     from . import sysinfo
     print(json.dumps(sysinfo.snapshot(), indent=2))
 
@@ -91,7 +96,13 @@ def cmd_snapshot(a):
 def cmd_sample(a):
     from .sampler import Sampler
     import tempfile
-    smp = Sampler(Path(tempfile.mkstemp(suffix=".csv")[1]), 1.0).start()
+    csv_path = Path(tempfile.mkstemp(suffix=".csv")[1])
+    if getattr(a, "platform", None):
+        from .android import DIR, AndroidSampler
+        a.platform.adb.sh(f"mkdir -p {DIR}")  # not prepare(): a session may be running
+        smp = AndroidSampler(a.platform, csv_path, 1.0, max_s=a.seconds + 30).start()
+    else:
+        smp = Sampler(csv_path, 1.0).start()
     shown = 0
     end = time.monotonic() + a.seconds
     try:
@@ -148,12 +159,22 @@ def cmd_devices(a):
                 print("no devices yet: bench devices add ID USER@HOST[:PORT]")
             for d in data["devices"]:
                 mark = "*" if d["id"] == data.get("default") else " "
+                if d.get("kind") == "android":
+                    print(f"{mark} {d['id']:14} {'adb:' + d['serial']:24} {d['name']}")
+                    continue
                 port = f":{d['port']}" if d.get("port", 22) != 22 else ""
                 print(f"{mark} {d['id']:14} {d['user']}@{d['host']}{port:6} {d['name']}"
                       + (f"  (ssh_opts: {d['ssh_opts']})" if d.get("ssh_opts") else ""))
         elif act == "add":
+            if a.id and a.target and a.target.startswith("adb:"):
+                d = devices.add({"id": a.id, "name": a.name, "kind": "android", "serial": a.target[4:]},
+                                allow_ssh_opts=False, replace=a.replace)
+                print(f"added {d['id']}; testing the connection...")
+                _print_probe(_android(d).probe())
+                return
             if not a.id or not a.target or "@" not in a.target:
-                raise SystemExit("usage: bench devices add ID USER@HOST[:PORT] [--name N] [--ssh-opts '...']")
+                raise SystemExit("usage: bench devices add ID USER@HOST[:PORT] [--name N] [--ssh-opts '...']\n"
+                                 "       bench devices add ID adb:SERIAL [--name N]   (Android)")
             user, host = a.target.split("@", 1)
             port = 22
             if host.count(":") == 1:
@@ -172,12 +193,27 @@ def cmd_devices(a):
             d = devices.get(a.id)
             if not d:
                 raise SystemExit(f"no device {a.id or '(default)'}")
-            _print_probe(remote.Remote(devices.conf(d)).probe())
+            _print_probe(_android(d).probe() if d.get("kind") == "android" else remote.Remote(devices.conf(d)).probe())
     except devices.DeviceError as e:
         raise SystemExit(str(e))
 
 
+def _android(dev: dict):
+    from .android import Android
+    return Android(dev["serial"], dev["id"])
+
+
 def _print_probe(r: dict) -> None:
+    if not r["ok"] and r["problem"] == "adb":
+        print(f"FAILED (adb): {r['detail']}")
+        return
+    if r["ok"] and r["facts"].get("kind") == "android":
+        f = r["facts"]
+        for k in ("model", "serial", "transport", "os", "kernel", "arch", "perfetto", "frametimeline", "cpufreq",
+                  "gpu_busy", "bootloader_unlocked", "packages"):
+            print(f"  {k:20} {f.get(k) if f.get(k) not in (None, '') else '-'}")
+        print("  ready to run" if f["can_run"] else f"  missing: {', '.join(f['missing'])}")
+        return
     if not r["ok"]:
         hint = {"auth": "the device does not accept this machine's SSH key: ssh-copy-id USER@HOST",
                 "hostkey": "the device's host key changed; check it, then fix ~/.ssh/known_hosts",
@@ -305,6 +341,17 @@ def main(argv=None):
         return
     util.RESULTS = remote.local_results(conf)
     if a.cmd in ("list", "compare", "web"):
+        a.fn(a)
+        return
+    if conf.get("kind") == "android":  # the session runs here and reaches the device over adb
+        from .android import Android
+        if a.cmd not in ("run", "snapshot", "sample"):
+            p.error(f"`{a.cmd}` is for SteamOS devices; Android sessions run on this machine "
+                    "(results go straight to the results folder)")
+        a.platform = Android(conf["serial"], conf["device"])
+        if a.cmd == "run":
+            a.device_label = conf["device"]
+            a.matrix_label = a.matrix_label or a.matrix
         a.fn(a)
         return
     r = remote.Remote(conf)
