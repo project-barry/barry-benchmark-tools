@@ -112,6 +112,15 @@
     const d = info && info.devices ? info.devices.find(x => x.id === id) : null;
     return d ? d.name : id;
   }
+  // Older sessions stored raw thermal-framework text; say what it means.
+  function flagText(f) {
+    const m = /^(?:[AB]: )?(?:run )?(\S+) thermal throttling: \{(.*)\}$/.exec(f);
+    if (!m) return f;
+    const prefix = /^[AB]: /.test(f) ? f.slice(0, 3) : "";
+    const parts = [...m[2].matchAll(/'([^']+)': (\d+)/g)].map(([, name, st]) =>
+      `${/gpu/.test(name) ? "GPU" : name.replace(/^cpufreq-cpu/, "CPU cluster from cpu")} throttle step ${st} (0 = full speed; higher = lower clock cap)`);
+    return `${prefix}${m[1]}: slowed by heat: ${parts.join("; ")}`;
+  }
   function sessionDevice(s) { return s.device ? devName(s.device) : (s.model || "-"); }
   const POWER = { battery: "Battery", "ac-estimate": "Charger (estimated draw)", "ac-unknown": "Charger (draw unknown)" };
   function powerText(p) { return POWER[p] || (p ? p : "-"); }
@@ -316,7 +325,7 @@
       if (ref && ref.emulation) facts.push(ref.emulation.x86_emulated ? `x86 emulated: ${ref.emulation.method}` : "native, no emulation");
       facts.push(`${ok.length} of ${measured.length} measured runs OK, ${res.runs.length - measured.length} warm-up discarded`);
       const flags = (res.flags || []).length ? h("ul", { class: "flags" }, res.flags.map(f =>
-        h("li", null, icon("warn", "var(--warning)"), h("span", null, f)))) : h("p", { class: "small" }, status("good", "No flags"));
+        h("li", null, icon("warn", "var(--warning)"), h("span", null, flagText(f))))) : h("p", { class: "small" }, status("good", "No flags"));
       const chart = h("div");
       const runsTable = runTable(name, res);
       body.appendChild(card(
@@ -420,7 +429,9 @@
     const flags = [];
     if (m.status !== "ok") flags.push(`Run ${m.status}: ${m.error || ""}`);
     if (m.warning) flags.push(m.warning);
-    if (mt.throttled) flags.push("Thermal throttling: " + Object.entries(mt.throttled).map(([k, v]) => `${k} state ${v}`).join(", "));
+    if (mt.throttled) flags.push("Slowed by heat: " + Object.entries(mt.throttled).map(([k, v]) =>
+      `${/gpu/.test(k) ? "GPU" : k.replace(/^cpufreq-cpu/, "CPU cluster from cpu")} throttle step ${v}`).join(", ") +
+      " (0 = full speed; each step lowers the clock cap by one frequency level)");
     if (m.cooldown && m.cooldown.timed_out) flags.push("Started before temperatures were back at the baseline");
     setPage(`${res.title || scen} ${run}`,
       h("div", { class: "pagehead" }, h("div", { class: "grow" },
@@ -428,7 +439,7 @@
         h("h1", null, `${res.title || scen}: ${run}${m.warmup ? " (warm-up, discarded)" : ""}`),
         h("p", { class: "muted" }, `${when(m.started)} · cooldown ${num(m.cooldown && m.cooldown.waited_s, 0)} s` +
           (m.emulation ? ` · ${m.emulation.x86_emulated ? "x86 emulated: " + m.emulation.method : "native"}` : ""))), files),
-      flags.length ? h("ul", { class: "flags" }, flags.map(f => h("li", null, icon("warn", "var(--warning)"), h("span", null, f)))) : null,
+      flags.length ? h("ul", { class: "flags" }, flags.map(f => h("li", null, icon("warn", "var(--warning)"), h("span", null, flagText(f))))) : null,
       tiles, charts);
     if (d.frames) {
       const fr = d.frames.t_mean_min_max;
@@ -496,7 +507,7 @@
       out.appendChild(card(h("div", { class: "cardhead" }, h("h2", { class: "grow" }, sc.title), h("span", { class: "muted small" }, sc.name)),
         sc.tool_a !== sc.tool_b ? banner(`Proton differs: A ${sc.tool_a}, B ${sc.tool_b}`) : null,
         table(["Metric", `A · ${d.a.tag} (${devName(d.a.device)})`, `B · ${d.b.tag} (${devName(d.b.device)})`, "Change", "", "Noise", "Runs"], rows, { align: ["", "r", "r", "r", "", "r", "r"] }),
-        flags.length ? h("ul", { class: "flags", style: null }, flags.map(f => h("li", null, icon("warn", "var(--warning)"), h("span", { class: "small" }, f)))) : null));
+        flags.length ? h("ul", { class: "flags", style: null }, flags.map(f => h("li", null, icon("warn", "var(--warning)"), h("span", { class: "small" }, flagText(f))))) : null));
     });
     out.appendChild(card(h("h2", null, "System settings that differ"),
       d.config_diff.length ? table(["Setting", "A", "B"], d.config_diff.map(r => ({ cells: r.map(x => x == null ? "-" : String(x)) })))

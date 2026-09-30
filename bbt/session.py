@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import report, runners, steam, stats, sysinfo
 from .sampler import thermal_zones
-from .util import RESULTS, STATE, log, now_iso, rd_int, slug, write_json
+from .util import RESULTS, STATE, log, now_iso, rd, rd_int, slug, write_json
 
 PRIMARY = ("avg_fps", "vkmark_score")
 
@@ -110,6 +110,35 @@ def expected_seconds(sc: dict, sess: dict) -> float:
     return (sc["warmup"] + sc["runs"]) * (per + cool)
 
 
+def throttle_text(throttled: dict) -> str:
+    """{'devfreq-3d00000.gpu': 5} -> 'GPU capped at 348 MHz at worst (step 5 of 7)'.
+
+    A thermal cooling device's state N limits the component to its Nth-highest
+    frequency, so the cap is read from the frequency table (on the device, at
+    the end of the session)."""
+    parts = []
+    for name, state in sorted(throttled.items()):
+        what, freqs, unit = name, [], 1
+        if name.startswith("devfreq-"):
+            dev = name[len("devfreq-"):]
+            what = "GPU" if "gpu" in dev else dev
+            freqs = rd(f"/sys/class/devfreq/{dev}/available_frequencies").split()
+            unit = 1_000_000
+        elif name.startswith("cpufreq-cpu"):
+            cpu = name[len("cpufreq-cpu"):]
+            rel = rd(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/related_cpus").split()
+            what = f"CPU {'cores ' + rel[0] + '-' + rel[-1] if len(rel) > 1 else 'core ' + cpu}"
+            freqs = rd(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_available_frequencies").split()
+            unit = 1000
+        table = sorted((int(f) for f in freqs if f.isdigit()), reverse=True)
+        if table and 0 <= state < len(table):
+            parts.append(f"{what} capped at {table[state] // unit} MHz at worst "
+                         f"(top {table[0] // unit} MHz, step {state} of {len(table) - 1})")
+        else:
+            parts.append(f"{what} throttle step {state}")
+    return "; ".join(parts)
+
+
 def flags_for(sc_result: dict, sess: dict) -> list[str]:
     runs = [r for r in sc_result["runs"] if not r["warmup"] and r["status"] == "ok"]
     fl = []
@@ -137,7 +166,7 @@ def flags_for(sc_result: dict, sess: dict) -> list[str]:
         if (r.get("cooldown") or {}).get("timed_out"):
             fl.append(f"{r['run']} started while still cooling (hit the {sess['cooldown']['max_s']} s cooldown limit)")
         if r["metrics"].get("throttled"):
-            fl.append(f"{r['run']} thermal throttling: {r['metrics']['throttled']}")
+            fl.append(f"{r['run']}: slowed by heat: {throttle_text(r['metrics']['throttled'])}")
         if r.get("warning"):
             fl.append(f"{r['run']}: {r['warning']}")
     starts = [((r.get("cooldown") or {}).get("end_c") or {}) for r in runs]
