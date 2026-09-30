@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+results/
+state/
+opt/
+scratch/
+.DS_Store

@@ -1,0 +1,65 @@
+# First end-to-end check: one native Vulkan test and one Proton game.
+#   bench run matrices/first-light.yaml --tag first-light
+session:
+  runs: 3            # measured runs per scenario
+  warmup: 1          # discarded first run
+  variance_cv_pct: 3 # flag scenarios whose average FPS / score varies more than this
+  cooldown:
+    tolerance_c: 3   # start a run once CPU and GPU are within 3 C of the idle baseline
+    min_s: 20
+    max_s: 600
+
+scenarios:
+  - name: vkmark-1080p
+    title: vkmark
+    kind: vkmark
+    vkmark:
+      winsys: headless       # offscreen: no compositor, pure GPU/driver throughput
+      size: 1920x1080
+      benchmarks:
+        - vertex:duration=10
+        - texture:duration=10
+        - shading:shading=phong:duration=10
+        - cube:duration=10
+        - effect2d:duration=10
+        - desktop:duration=10
+
+  - name: tr2013-dx11-proton11-arm64
+    title: Tomb Raider (2013)
+    kind: steam
+    appid: 203160
+    api: dx11 (DXVK)
+    proton: proton_11-arm64   # compat tool name, see `bench steam tools`
+    # Built-in benchmark: runs on start, quits when done (about 75 s).
+    # -benchmarkini is ignored by this build, so the settings go in the registry.
+    args: [-nolauncher, -benchmark]
+    capture: until_exit
+    trim_start_s: 6           # loading screen before the flythrough
+    trim_end_s: 1
+    timeout_s: 600
+    wine_registry:            # the game's launcher settings (vsync off = uncapped)
+      'HKCU\Software\Crystal Dynamics\Tomb Raider\Graphics':
+        Fullscreen: 1
+        ExclusiveFullscreen: 1
+        FullscreenWidth: 1920
+        FullscreenHeight: 1080
+        FullscreenRefreshRate: 60
+        VSyncMode: 0
+        TextureQuality: 2
+        BestTextureFilter: 6
+        HairQuality: 0
+        AntiAliasingMode: 1
+        ShadowMode: 1
+        ShadowResolution: 1
+        SSAOMode: 1
+        DOFQuality: 1
+        ReflectionQuality: 1
+        LODScale: 2
+        EnablePostProcess: 1
+        EnableTessellation: 0
+    game_results:             # the game's own numbers, kept as a cross-check
+      glob: benchmarkresults *.txt
+      metrics:
+        game_avg_fps: 'Average FPS:\s*([\d.]+)'
+        game_min_fps: 'Min FPS:\s*([\d.]+)'
+        game_max_fps: 'Max FPS:\s*([\d.]+)'

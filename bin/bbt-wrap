@@ -1,0 +1,16 @@
+#!/bin/bash
+# Steam launch-option wrapper, set per game by the harness:
+#     /home/steamos/bench/bin/bbt-wrap %command%
+# While a benchmark run is active, ~/bench/state/run.env (written by `bench run`)
+# adds the run's environment (MangoHud logging etc.) and extra game arguments.
+# Without that file, or once it has expired, the game starts unchanged, so
+# playing normally is not affected.
+state="${BBT_HOME:-$HOME/bench}/state"
+BBT_ENV=() BBT_ARGS=() BBT_EXPIRES=0
+# run.env sets BBT_ENV=(K=V ...), BBT_ARGS=(...) and BBT_EXPIRES (epoch s)
+# shellcheck source=/dev/null
+[[ -f "$state/run.env" ]] && source "$state/run.env"
+if (( $(date +%s) > BBT_EXPIRES )); then BBT_ENV=() BBT_ARGS=(); fi
+{ printf '%s bbt-wrap' "$(date -Is)"; printf ' %q' "${BBT_ENV[@]}" "$@" "${BBT_ARGS[@]}"; echo; } \
+  >>"$state/wrap.log" 2>/dev/null
+exec env "${BBT_ENV[@]}" "$@" "${BBT_ARGS[@]}"
