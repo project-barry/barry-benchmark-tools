@@ -116,7 +116,7 @@ while the browser can be anywhere. Runs, pulls and so on are ordinary
 agree.
 
 Access: the server prints a link with a token. Opening it signs that browser
-in (the cookie is HttpOnly and SameSite=Strict), and every request needs it.
+in (the cookie is HttpOnly and SameSite=Lax, so links opened from chat apps work), and every request needs it.
 Changes also need a custom header that other websites cannot send. By default
 it listens on 127.0.0.1 only. With `--host 0.0.0.0`, anyone on your network
 who has the link can start runs, so only share the link with people you

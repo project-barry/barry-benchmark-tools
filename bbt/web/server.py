@@ -7,7 +7,7 @@ does exactly what the CLI does; their output streams to the browser as
 server-sent events.
 
 Security: every request needs the session token (printed at start, set as a
-SameSite=Strict HttpOnly cookie on first visit). Changing requests also need
+SameSite=Lax HttpOnly cookie on first visit). Changing requests also need
 an X-BBT header, which cross-site pages cannot send without a CORS preflight
 this server never grants. It binds to 127.0.0.1 unless told otherwise.
 """
@@ -331,9 +331,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # first visit: /?token=... -> cookie, then a clean URL
         if method == "GET" and "token" in q:
             if secrets.compare_digest(q["token"], self.app.token):
+                # Lax, not Strict: a link opened from a chat app is a cross-site navigation,
+                # and a Strict cookie would not go with the redirect that follows it.
+                # Changes still need the X-BBT header, which other sites cannot send.
                 return self._send(303, b"", "text/plain", {
                     "Location": "/",
-                    "Set-Cookie": f"bbt_token={self.app.token}; Path=/; HttpOnly; SameSite=Strict"})
+                    "Set-Cookie": f"bbt_token={self.app.token}; Path=/; HttpOnly; SameSite=Lax"})
             return self._send(403, b"wrong token", "text/plain")
         if not self._authed():
             page = (b"<!doctype html><meta charset=utf-8><title>Barry Benchmark Tools</title>"
