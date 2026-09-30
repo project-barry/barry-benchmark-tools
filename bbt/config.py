@@ -33,7 +33,7 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
-def load(path: Path) -> dict:
+def load(path: Path, label: str | None = None) -> dict:
     if yaml is None:
         raise SystemExit("PyYAML is missing (python3 -c 'import yaml' fails)")
     raw = yaml.safe_load(Path(path).read_text()) or {}
@@ -58,4 +58,4 @@ def load(path: Path) -> dict:
         scenarios.append(s)
     if not scenarios:
         raise SystemExit("matrix has no enabled scenarios")
-    return {"session": session, "scenarios": scenarios, "source": str(path)}
+    return {"session": session, "scenarios": scenarios, "source": label or str(path)}

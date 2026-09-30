@@ -6,7 +6,8 @@ from pathlib import Path
 
 from .report import key_metrics, table
 from .stats import direction
-from .util import RESULTS, read_json, slug
+from . import util
+from .util import read_json, slug
 
 IGNORE_CONFIG = ("temps_c", "power", "cooling", "gamescope.args", "system.hostname")
 
@@ -16,17 +17,17 @@ def resolve(ref: str) -> Path:
     p = Path(ref)
     if (p / "summary.json").exists():
         return p
-    if (RESULTS / ref / "summary.json").exists():
-        return RESULTS / ref
+    if (util.RESULTS / ref / "summary.json").exists():
+        return util.RESULTS / ref
     tagged = []
-    for d in RESULTS.glob("*/summary.json"):
+    for d in util.RESULTS.glob("*/summary.json"):
         try:
             if read_json(d)["tag"] == ref or d.parent.name.split("_", 1)[-1] == slug(ref):
                 tagged.append(d.parent)
         except (KeyError, ValueError):
             continue
     if not tagged:
-        raise SystemExit(f"no session found for '{ref}' (see `bench list`)")
+        raise SystemExit(f"no session found for '{ref}' in {util.RESULTS} (see `bench list`)")
     return sorted(tagged)[-1]
 
 

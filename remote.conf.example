@@ -1,0 +1,6 @@
+# Copy to remote.conf (git-ignored) to drive the device from this machine:
+# `bench run ...` then runs on the device and the results land in ./results.
+target=steamos@<device-ip-or-hostname>   # the user that runs Steam in Gaming Mode
+# ssh_opts=-o UserKnownHostsFile=~/.ssh/known_hosts.custom
+# results=results                         # local results folder (relative to bench)
+# remote_dir=bench                        # harness folder on the device, under ~

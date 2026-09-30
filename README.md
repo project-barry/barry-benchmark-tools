@@ -16,27 +16,45 @@ WoW64 / ARM64EC, or FEX for the whole process).
 
 ## Quick start
 
-On the Mac (or any machine with SSH access to the device):
+The harness runs on the device, but you drive it from your own machine and
+the results are saved there.
+
+1. On your machine, in this repo: `cp remote.conf.example remote.conf` and set
+   `target=steamos@<device>`. The user must be the one running Steam in Gaming
+   Mode, reachable with an SSH key. `remote.conf` is git-ignored.
+2. `./bench setup`: fetches vkmark into `~/bench/opt` on the device (no root).
+3. Run, change something, run again, compare:
 
 ```sh
-BBT_SSH_OPTS="" scripts/deploy.sh steamos@<device>   # copies the tool to ~/bench
-```
-
-On the device, as the user that runs Steam (`steamos`):
-
-```sh
-cd ~/bench
-./bench setup                                    # vkmark into ~/bench/opt (no root)
 ./bench run matrices/first-light.yaml --tag baseline
-# ... change something (clock cap, governor, ...) ...
+# ... change something on the device (clock cap, governor, ...) ...
 ./bench run matrices/first-light.yaml --tag gpu-cap-550
 ./bench compare baseline gpu-cap-550
 ```
 
-Other commands: `bench list`, `bench snapshot` (current config as JSON),
-`bench sample 30` (live clocks/temps/power), `bench steam tools`,
-`bench steam status <appid>`, `bench steam set-tool <appid> <tool>`,
-`bench steam unwrap <appid>`.
+`bench run` copies the harness to `~/bench` on the device, uploads the
+matrix, and starts the session there as a systemd user unit. It then streams
+the log, and when the session ends it copies the session folder to
+`./results/`. The device copy is deleted only after the local copy has the
+same number of files and bytes. The session keeps going if SSH drops or you
+press Ctrl-C:
+
+| Command                | What it does                                                       |
+| ---------------------- | ------------------------------------------------------------------ |
+| `bench status`         | what is running on the device, what has not been pulled yet        |
+| `bench attach`         | follow the current (or last) run, then pull it                     |
+| `bench stop`           | end the running session (it writes what it measured), then pull it |
+| `bench pull`           | fetch finished sessions still on the device                        |
+| `bench deploy`         | copy the harness to the device without running anything           |
+| `bench list`           | local sessions                                                     |
+| `bench compare A B`    | local sessions, by tag or folder name                              |
+
+Add `--keep-remote` to keep the device copy. Every other command (`snapshot`,
+`sample 30`, `steam tools`, `steam status <appid>`, `steam set-tool <appid>
+<tool>`, `steam unwrap <appid>`) runs on the device and prints here.
+
+Without a `remote.conf`, `bench` works locally on the device itself, with
+results in `~/bench/results`.
 
 ## What a run does
 
@@ -98,7 +116,7 @@ fade-out from the log. `wine_registry` and `game_results` are shown in
 
 ## Results
 
-`~/bench/results/<YYYYMMDD-HHMM>_<tag>/`:
+`results/<YYYYMMDD-HHMM>_<tag>/` (on your machine in remote mode):
 
 | File                               | Content                                                     |
 | ---------------------------------- | ----------------------------------------------------------- |
@@ -107,6 +125,7 @@ fade-out from the log. `wine_registry` and `game_results` are shown in
 | `summary.json`                     | Per scenario: runs, mean/median/stdev/CV, flags             |
 | `session.json`                     | Tag, matrix, system snapshot and baseline temps at start    |
 | `<scenario>/<run>/`                | `snapshot.json`, `samples.csv`, MangoHud log, game files    |
+| `remote-run.log`                   | The session's console output (remote mode)                  |
 
 Metrics: average FPS, 1% and 0.1% lows (1000 / mean of the slowest 1% /
 0.1% frame times), frame-time p50/p90/p95/p99/p99.9 and stdev, hitches,
@@ -124,8 +143,9 @@ frame rates sitting on a refresh-rate cap.
 
 ## Requirements
 
-Python 3.10+ with PyYAML (both on SteamOS), `vulkaninfo`, MangoHud, and
-Steam in Gaming Mode as a systemd user unit (`steam.service`).
+On the device: Python 3.10+ with PyYAML (both on SteamOS), `vulkaninfo`,
+MangoHud, and Steam in Gaming Mode as a systemd user unit (`steam.service`).
+On your machine: Python 3.12+ and ssh (no PyYAML needed).
 
 ## How this was made
 

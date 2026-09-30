@@ -1,5 +1,8 @@
 """bench: headless benchmark harness for SteamOS on ARM handhelds.
 
+Runs on the device, or from another machine when remote.conf exists next to
+`bench` (remote mode: sessions run on the device, results land locally).
+
   bench run MATRIX.yaml --tag TAG     run every scenario, write a results folder
   bench compare A B                   % change per scenario/metric (A, B = tags or session names)
   bench list                          sessions in ~/bench/results
@@ -10,6 +13,13 @@
   bench steam set-tool APPID TOOL     map a compat tool (restarts Steam if it changes)
   bench steam unwrap APPID            remove the harness launch options for an app
   bench setup                         fetch vkmark into ~/bench/opt (no root needed)
+
+Remote mode only:
+  bench deploy                        copy the harness to the device
+  bench status                        what runs on the device, what is not pulled yet
+  bench attach                        follow the current/last run, then pull it
+  bench stop                          end the running session (keeps what was measured)
+  bench pull                          fetch finished sessions still on the device
 """
 from __future__ import annotations
 
@@ -21,12 +31,13 @@ import tarfile
 import time
 from pathlib import Path
 
-from .util import OPT, RESULTS, log, read_json
+from . import util
+from .util import OPT, log, read_json
 
 
 def cmd_run(a):
     from . import config, session
-    m = config.load(Path(a.matrix))
+    m = config.load(Path(a.matrix), a.matrix_label)
     if a.only:
         m["scenarios"] = [s for s in m["scenarios"] if s["name"] in a.only]
         if not m["scenarios"]:
@@ -55,9 +66,9 @@ def cmd_compare(a):
 
 
 def cmd_list(a):
-    if not RESULTS.is_dir():
+    if not util.RESULTS.is_dir():
         return
-    for d in sorted(RESULTS.iterdir()):
+    for d in sorted(util.RESULTS.iterdir()):
         s = d / "summary.json"
         if not s.exists():
             continue
@@ -156,7 +167,16 @@ def main(argv=None):
     r.add_argument("--runs", type=int, help="override measured runs per scenario")
     r.add_argument("--warmup", type=int, help="override warm-up runs per scenario")
     r.add_argument("--dry-run", action="store_true", help="print the resolved matrix and exit")
+    r.add_argument("--matrix-label", help=argparse.SUPPRESS)
+    r.add_argument("--no-deploy", action="store_true", help="remote mode: skip copying the harness first")
+    r.add_argument("--keep-remote", action="store_true", help="remote mode: keep the device copy after pulling")
     r.set_defaults(fn=cmd_run)
+    for name, hlp in (("deploy", "copy the harness to the device"), ("status", "remote run status"),
+                      ("attach", "follow the current/last remote run"), ("stop", "stop the remote run"),
+                      ("pull", "fetch finished sessions from the device")):
+        x = sp.add_parser(name, help=f"remote mode: {hlp}")
+        x.add_argument("--keep-remote", action="store_true", help="keep the device copy after pulling")
+        x.set_defaults(fn=None)
     c = sp.add_parser("compare", help="compare two sessions")
     c.add_argument("a")
     c.add_argument("b")
@@ -174,12 +194,30 @@ def main(argv=None):
     st.add_argument("tool", nargs="?")
     st.set_defaults(fn=cmd_steam)
     sp.add_parser("setup", help="fetch vkmark").set_defaults(fn=cmd_setup)
+    argv = sys.argv[1:] if argv is None else argv
     a = p.parse_args(argv)
     if a.cmd == "steam" and a.action in ("status", "set-tool", "unwrap") and not a.appid:
         p.error("this action needs an APPID")
     if a.cmd == "steam" and a.action == "set-tool" and a.tool is None:
         p.error("set-tool needs a TOOL name ('' removes the mapping)")
-    a.fn(a)
+    from . import remote
+    conf = remote.load_conf()
+    if conf is None:
+        if a.fn is None:
+            p.error(f"`{a.cmd}` needs remote mode (a remote.conf next to bench, see remote.conf.example)")
+        a.fn(a)
+        return
+    util.RESULTS = remote.local_results(conf)
+    if a.cmd in ("list", "compare"):
+        a.fn(a)
+        return
+    r = remote.Remote(conf)
+    handlers = {"run": remote.cmd_run, "attach": remote.cmd_attach, "stop": remote.cmd_stop,
+                "pull": remote.cmd_pull, "status": remote.cmd_status, "deploy": lambda r, a: r.deploy()}
+    if a.cmd in handlers:
+        handlers[a.cmd](r, a)
+    else:  # snapshot, sample, steam, setup: run on the device as-is
+        remote.passthrough(r, argv, tty=a.cmd == "sample")
 
 
 if __name__ == "__main__":

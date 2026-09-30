@@ -11,7 +11,7 @@ from pathlib import Path
 
 BENCH = Path(os.environ.get("BBT_HOME", Path.home() / "bench"))
 STATE = BENCH / "state"
-RESULTS = BENCH / "results"
+RESULTS = Path(os.environ["BBT_RESULTS"]) if os.environ.get("BBT_RESULTS") else BENCH / "results"
 OPT = BENCH / "opt"
 
 
