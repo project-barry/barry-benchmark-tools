@@ -1,0 +1,101 @@
+# Power-profile comparison on the KONKR Pocket FIT: Tomb Raider high
+# uncapped (GPU-bound, heat-limited) and the same capped at 30 fps with
+# DXVK's frame limiter, where a lower-power profile should save energy
+# without losing frames. vkmark is left out: it is CPU/driver-bound here.
+#   bench run matrices/tr2013-profiles.yaml --tag <profile>
+session:
+  runs: 3            # measured runs per scenario
+  warmup: 1          # discarded first run
+  variance_cv_pct: 3 # flag scenarios whose average FPS / score varies more than this
+  cooldown:          # between runs, ends at whichever comes first:
+    tolerance_c: 3   #   CPU and GPU within 3 C of the idle baseline
+    plateau_s: 15    #   temperatures levelled off (fell < 1 C in 15 s)
+    max_s: 150       #   150 s at most
+
+scenarios:
+  - name: tr2013-high-dx11-proton11-arm64
+    title: Tomb Raider (2013) high
+    kind: steam
+    appid: 203160
+    api: dx11 (DXVK)
+    proton: proton_11-arm64   # compat tool name, see `bench steam tools`
+    # Built-in benchmark: runs on start, quits when done (about 75 s).
+    # -benchmarkini is ignored by this build, so the settings go in the registry.
+    args: [-nolauncher, -benchmark]
+    capture: until_exit
+    trim_start_s: 6           # loading screen before the flythrough
+    trim_end_s: 1
+    timeout_s: 600
+    expected_s: 95            # typical run length, for the time estimate
+    wine_registry:            # the game's launcher settings (vsync off = uncapped)
+      'HKCU\Software\Crystal Dynamics\Tomb Raider\Graphics':
+        Fullscreen: 1
+        ExclusiveFullscreen: 1
+        FullscreenWidth: 1920
+        FullscreenHeight: 1080
+        FullscreenRefreshRate: 60
+        VSyncMode: 0
+        TextureQuality: 2
+        BestTextureFilter: 6
+        HairQuality: 1            # TressFX
+        AntiAliasingMode: 2       # 2x SSAA
+        ShadowMode: 1
+        ShadowResolution: 1
+        SSAOMode: 1
+        DOFQuality: 1
+        ReflectionQuality: 1
+        LODScale: 2
+        EnablePostProcess: 1
+        EnableTessellation: 0
+    game_results:             # the game's own numbers, kept as a cross-check
+      glob: benchmarkresults *.txt
+      metrics:
+        game_avg_fps: 'Average FPS:\s*([\d.]+)'
+        game_min_fps: 'Min FPS:\s*([\d.]+)'
+        game_max_fps: 'Max FPS:\s*([\d.]+)'
+
+  - name: tr2013-high-cap30-dx11-proton11-arm64
+    title: Tomb Raider (2013) high, 30 fps cap
+    kind: steam
+    appid: 203160
+    api: dx11 (DXVK)
+    proton: proton_11-arm64   # compat tool name, see `bench steam tools`
+    # Built-in benchmark: runs on start, quits when done (about 75 s).
+    # -benchmarkini is ignored by this build, so the settings go in the registry.
+    args: [-nolauncher, -benchmark]
+    env:
+      # DXVK frame limiter: every profile reaches 30 fps, so power and
+      # temperature show what the cap costs. Proton 11 ARM64's DXVK
+      # (2.7.1-498) ignores DXVK_FRAME_RATE; the config option works.
+      DXVK_CONFIG: dxgi.maxFrameRate = 30
+    capture: until_exit
+    trim_start_s: 6           # loading screen before the flythrough
+    trim_end_s: 1
+    timeout_s: 600
+    expected_s: 95            # typical run length, for the time estimate
+    wine_registry:            # the game's launcher settings (vsync off = uncapped)
+      'HKCU\Software\Crystal Dynamics\Tomb Raider\Graphics':
+        Fullscreen: 1
+        ExclusiveFullscreen: 1
+        FullscreenWidth: 1920
+        FullscreenHeight: 1080
+        FullscreenRefreshRate: 60
+        VSyncMode: 0
+        TextureQuality: 2
+        BestTextureFilter: 6
+        HairQuality: 1            # TressFX
+        AntiAliasingMode: 2       # 2x SSAA
+        ShadowMode: 1
+        ShadowResolution: 1
+        SSAOMode: 1
+        DOFQuality: 1
+        ReflectionQuality: 1
+        LODScale: 2
+        EnablePostProcess: 1
+        EnableTessellation: 0
+    game_results:             # the game's own numbers, kept as a cross-check
+      glob: benchmarkresults *.txt
+      metrics:
+        game_avg_fps: 'Average FPS:\s*([\d.]+)'
+        game_min_fps: 'Min FPS:\s*([\d.]+)'
+        game_max_fps: 'Max FPS:\s*([\d.]+)'
