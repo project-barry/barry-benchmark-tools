@@ -220,6 +220,9 @@ scenarios:
 `until_exit` scenarios take `trim_start_s` / `trim_end_s` to cut loading and
 fade-out from the log. `wine_registry` and `game_results` are shown in
 `matrices/first-light.yaml` (Tomb Raider's built-in benchmark).
+`matrices/tr2013-high.yaml` is the same with 2x SSAA and TressFX: on faster
+devices (the KONKR Pocket FIT) first-light's Tomb Raider sits at the 120 Hz
+cap, where CPU and GPU changes don't show.
 
 ## Results
 
