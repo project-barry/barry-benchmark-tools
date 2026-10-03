@@ -1,5 +1,12 @@
 # Barry Benchmark Tools
 
+> [!IMPORTANT]
+> **This repo was built with a coding agent: [Claude Code](https://www.anthropic.com/claude-code),
+> running Anthropic's Claude Opus 5.5 (`claude-opus-5-5`).** Claude wrote the
+> code, the commit messages and this README. People set the goals, made the
+> decisions and did the hands-on testing. Review the code before you rely on
+> it. See [a note from lavachemist](https://github.com/project-barry), a human, on Project Barry and generative AI.
+
 A headless benchmark harness for SteamOS on ARM handhelds (developed on a
 Retroid Pocket 6, Snapdragon 8 Gen 2 / SM8550, Adreno 740 with Turnip). It
 measures what CPU, GPU and memory changes (clock caps, governors, scheduler,
