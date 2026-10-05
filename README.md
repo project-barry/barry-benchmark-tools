@@ -8,7 +8,7 @@
 > it. See [a note from lavachemist](https://github.com/project-barry), a human, on Project Barry and generative AI.
 
 > [!TIP]
-> **Join the Project Barry community on Discord:** https://discord.gg/KSCCwcGG3
+> **Join the Project Barry community on Discord:** https://discord.gg/euPurKCWc4
 
 A headless benchmark harness for SteamOS on ARM handhelds (developed on a
 Retroid Pocket 6, Snapdragon 8 Gen 2 / SM8550, Adreno 740 with Turnip). It
