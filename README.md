@@ -9,6 +9,8 @@
 
 > [!TIP]
 > **Join the Project Barry community on Discord:** https://discord.gg/euPurKCWc4
+>
+> **Watch Project Barry on YouTube:** https://www.youtube.com/@Project-Barry
 
 A headless benchmark harness for SteamOS on ARM handhelds (developed on a
 Retroid Pocket 6, Snapdragon 8 Gen 2 / SM8550, Adreno 740 with Turnip). It
